@@ -15,13 +15,28 @@ class MusicCog(commands.Cog):
         self.song_queues = {}
         self.populate_tasks = {}
 
+    async def _set_activity(self, song, channel):
+        activity = discord.Activity(
+            type=discord.ActivityType.listening,
+            name=song['title'],
+            details=f"In: {channel.name}"
+        )
+        await self.bot.change_presence(activity=activity)
+
+    async def _clear_activity(self):
+        activity = discord.Activity(
+            type=discord.ActivityType.listening, 
+            name="um silêncio ensurdecedor"
+        )
+        await self.bot.change_presence(activity=activity)
+
     async def _populate_queue(self, generator, guild_id):
         try:
-            async for audio_url, title in generator:
+            async for song in generator:
                 if guild_id not in self.song_queues:
                     break  # Stop if the queue has been cleared
-                log_event("enqueue_background", guild_id=guild_id, title=title)
-                self.song_queues[guild_id].append((audio_url, title))
+                log_event("enqueue_background", guild_id=guild_id, title=song['title'])
+                self.song_queues[guild_id].append(song)
         except Exception as e:
             log_event("populate_queue_error", error=str(e))
         finally:
@@ -30,34 +45,35 @@ class MusicCog(commands.Cog):
 
     async def play_next_song(self, voice_client, guild_id, channel):
         if self.song_queues.get(guild_id):
-            audio_url, title = self.song_queues[guild_id].popleft()
-            log_event("dequeue", guild_id=guild_id, title=title, audio_url=audio_url)
+            song = self.song_queues[guild_id].popleft()
+            log_event("dequeue", guild_id=guild_id, title=song['title'])
+
+            await self._set_activity(song, channel)
 
             ffmpeg_options = {
                 "before_options": (
                     "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-                    '-headers "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36\r\nAccept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7\r\n"'
+                    '-headers "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36\r\n'
+                    'Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7\r\n"'
                 ),
                 "options": "-vn"
             }
-            log_event("ffmpeg_options", options=ffmpeg_options)
 
-            source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="ffmpeg")
+            source = discord.FFmpegOpusAudio(song['url'], **ffmpeg_options, executable="ffmpeg")
 
             def after_play(error):
                 if error:
-                    log_event("ffmpeg_error", title=title, error=str(error))
+                    log_event("ffmpeg_error", title=song['title'], error=str(error))
                 asyncio.run_coroutine_threadsafe(self.play_next_song(voice_client, guild_id, channel), self.bot.loop)
 
             voice_client.play(source, after=after_play)
-            log_event("now_playing_sent", title=title)
-            await channel.send(f"Now playing: **{title}**")
+            await channel.send(f"Now playing: **{song['title']}**")
         else:
             log_event("queue_empty_disconnect", guild_id=guild_id)
+            await self._clear_activity()
             await voice_client.disconnect()
             if guild_id in self.song_queues:
                 self.song_queues[guild_id].clear()
-
 
     @app_commands.command(name="play", description="Play a song or add it to the queue.")
     @app_commands.describe(song_query="Search query or URL")
@@ -95,21 +111,20 @@ class MusicCog(commands.Cog):
             return
 
         self.song_queues[guild_id].append(first_song)
-        log_event("enqueue", guild_id=guild_id, title=first_song[1])
+        log_event("enqueue", guild_id=guild_id, title=first_song['title'])
 
         is_playlist = "list=" in song_query
         if is_playlist:
-            # Cancel any previous populate task for this guild
             if guild_id in self.populate_tasks:
                 self.populate_tasks[guild_id].cancel()
             
             self.populate_tasks[guild_id] = asyncio.create_task(self._populate_queue(song_generator, guild_id))
-            await interaction.followup.send(f"Added playlist to queue. Starting with: **{first_song[1]}**")
+            await interaction.followup.send(f"Added playlist to queue. Starting with: **{first_song['title']}**")
         else:
             if voice_client.is_playing() or voice_client.is_paused():
-                await interaction.followup.send(f"Added to queue: **{first_song[1]}**")
+                await interaction.followup.send(f"Added to queue: **{first_song['title']}**")
             else:
-                await interaction.followup.send(f"Now playing: **{first_song[1]}**")
+                await interaction.followup.send(f"Now playing: **{first_song['title']}**")
 
         if not (voice_client.is_playing() or voice_client.is_paused()):
             await self.play_next_song(voice_client, guild_id, interaction.channel)
@@ -157,7 +172,6 @@ class MusicCog(commands.Cog):
         gid = str(interaction.guild_id)
         log_event("stop_called", guild_id=gid, channel_id=getattr(interaction.channel, "id", None))
 
-        # Cancel any running populate task
         if gid in self.populate_tasks:
             self.populate_tasks[gid].cancel()
             del self.populate_tasks[gid]
@@ -168,17 +182,15 @@ class MusicCog(commands.Cog):
             await safe_reply(interaction, "I'm not connected to any voice channel.")
             return
 
-        # Clear queue
         if gid in self.song_queues:
             self.song_queues[gid].clear()
         log_event("queue_cleared", guild_id=gid)
 
-        # Stop play if needed
         if vc.is_playing() or vc.is_paused():
             log_event("stopping_playback", guild_id=gid)
             vc.stop()
 
-        # Disconnect
+        await self._clear_activity()
         try:
             await asyncio.wait_for(vc.disconnect(), timeout=5)
             log_event("disconnected", guild_id=gid)

@@ -85,6 +85,8 @@ async def extract_audio(song_query: str):
                 continue
         
         title = track.get("title") or track.get("webpage_url") or "Untitled"
+        duration = track.get("duration")
+        thumbnail = track.get("thumbnail")
         audio_url = None
         fmts = track.get("formats") or []
 
@@ -117,6 +119,11 @@ async def extract_audio(song_query: str):
                 audio_url = candidate
 
         if audio_url and not any(x in audio_url for x in ["googleusercontent.com/thumbnail", "storyboard"]):
-            yield (audio_url, title)
+            yield {
+                "url": audio_url, 
+                "title": title, 
+                "duration": duration, 
+                "thumbnail": thumbnail
+            }
         else:
             log_event("no_playable_stream", title=title)

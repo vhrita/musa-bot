@@ -18,7 +18,7 @@ async def on_ready():
     log_event("ready", user=str(bot.user), user_id=getattr(bot.user, "id", None))
     await bot.change_presence(
         status=discord.Status.online,
-        activity=discord.Activity(type=discord.ActivityType.listening, name="suas faixas")
+        activity=discord.Activity(type=discord.ActivityType.listening, name="um silêncio ensurdecedor")
     )
 
 async def main():
