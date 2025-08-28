@@ -3,17 +3,18 @@ from discord.ext import commands
 from discord import app_commands
 from collections import deque
 import asyncio
+import random
 
 from utils.logging import log_event
 from utils.discord_utils import safe_reply
-from services.youtube import extract_audio, search_ytdlp_async
+from services.youtube import extract_info, resolve_song, search_ytdlp_async
 from config import COOKIES_PATH
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.song_queues = {}
-        self.populate_tasks = {}
+        self.current_song = {}
 
     async def _set_activity(self, song, channel):
         activity = discord.Activity(
@@ -30,22 +31,17 @@ class MusicCog(commands.Cog):
         )
         await self.bot.change_presence(activity=activity)
 
-    async def _populate_queue(self, generator, guild_id):
-        try:
-            async for song in generator:
-                if guild_id not in self.song_queues:
-                    break  # Stop if the queue has been cleared
-                log_event("enqueue_background", guild_id=guild_id, title=song['title'])
-                self.song_queues[guild_id].append(song)
-        except Exception as e:
-            log_event("populate_queue_error", error=str(e))
-        finally:
-            if guild_id in self.populate_tasks:
-                del self.populate_tasks[guild_id]
-
     async def play_next_song(self, voice_client, guild_id, channel):
         if self.song_queues.get(guild_id):
-            song = self.song_queues[guild_id].popleft()
+            unresolved_song = self.song_queues[guild_id].popleft()
+            song = await resolve_song(unresolved_song)
+
+            if not song:
+                log_event("resolve_failed", guild_id=guild_id, info=unresolved_song)
+                # Try next song
+                return await self.play_next_song(voice_client, guild_id, channel)
+
+            self.current_song[guild_id] = song
             log_event("dequeue", guild_id=guild_id, title=song['title'])
 
             await self._set_activity(song, channel)
@@ -64,6 +60,7 @@ class MusicCog(commands.Cog):
             def after_play(error):
                 if error:
                     log_event("ffmpeg_error", title=song['title'], error=str(error))
+                self.current_song.pop(guild_id, None)
                 asyncio.run_coroutine_threadsafe(self.play_next_song(voice_client, guild_id, channel), self.bot.loop)
 
             voice_client.play(source, after=after_play)
@@ -74,6 +71,7 @@ class MusicCog(commands.Cog):
             await voice_client.disconnect()
             if guild_id in self.song_queues:
                 self.song_queues[guild_id].clear()
+            self.current_song.pop(guild_id, None)
 
     @app_commands.command(name="play", description="Play a song or add it to the queue.")
     @app_commands.describe(song_query="Search query or URL")
@@ -102,32 +100,33 @@ class MusicCog(commands.Cog):
         if self.song_queues.get(guild_id) is None:
             self.song_queues[guild_id] = deque()
 
-        song_generator = extract_audio(song_query)
+        songs = await extract_info(song_query)
 
-        try:
-            first_song = await anext(song_generator)
-        except StopAsyncIteration:
+        if not songs:
             await interaction.followup.send(f"No results found for: **{song_query}**")
             return
 
-        self.song_queues[guild_id].append(first_song)
-        log_event("enqueue", guild_id=guild_id, title=first_song['title'])
+        self.song_queues[guild_id].extend(songs)
+        log_event("enqueue", guild_id=guild_id, count=len(songs))
 
-        is_playlist = "list=" in song_query
-        if is_playlist:
-            if guild_id in self.populate_tasks:
-                self.populate_tasks[guild_id].cancel()
-            
-            self.populate_tasks[guild_id] = asyncio.create_task(self._populate_queue(song_generator, guild_id))
-            await interaction.followup.send(f"Added playlist to queue. Starting with: **{first_song['title']}**")
+        if len(songs) > 1:
+            await interaction.followup.send(f"Added **{len(songs)}** songs to the queue.")
         else:
-            if voice_client.is_playing() or voice_client.is_paused():
-                await interaction.followup.send(f"Added to queue: **{first_song['title']}**")
-            else:
-                await interaction.followup.send(f"Now playing: **{first_song['title']}**")
+            title = songs[0].get('title', 'Untitled')
+            await interaction.followup.send(f"Added to queue: **{title}**")
 
         if not (voice_client.is_playing() or voice_client.is_paused()):
             await self.play_next_song(voice_client, guild_id, interaction.channel)
+
+    @app_commands.command(name="shuffle", description="Shuffle the current playlist.")
+    async def shuffle(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild_id)
+        if not self.song_queues.get(guild_id):
+            return await safe_reply(interaction, "The queue is empty.")
+
+        random.shuffle(self.song_queues[guild_id])
+        log_event("shuffled", guild_id=guild_id)
+        await safe_reply(interaction, "Queue shuffled!")
 
     @app_commands.command(name="skip", description="Skips the current playing song")
     async def skip(self, interaction: discord.Interaction):
@@ -171,10 +170,6 @@ class MusicCog(commands.Cog):
         
         gid = str(interaction.guild_id)
         log_event("stop_called", guild_id=gid, channel_id=getattr(interaction.channel, "id", None))
-
-        if gid in self.populate_tasks:
-            self.populate_tasks[gid].cancel()
-            del self.populate_tasks[gid]
 
         vc = interaction.guild.voice_client
         if not vc or not vc.is_connected():
