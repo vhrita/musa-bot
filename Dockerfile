@@ -13,6 +13,6 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY musa.py ./
+COPY . .
 
 CMD ["python", "musa.py"]
