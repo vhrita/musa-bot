@@ -13,6 +13,20 @@ class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.song_queues = {}
+        self.populate_tasks = {}
+
+    async def _populate_queue(self, generator, guild_id):
+        try:
+            async for audio_url, title in generator:
+                if guild_id not in self.song_queues:
+                    break  # Stop if the queue has been cleared
+                log_event("enqueue_background", guild_id=guild_id, title=title)
+                self.song_queues[guild_id].append((audio_url, title))
+        except Exception as e:
+            log_event("populate_queue_error", error=str(e))
+        finally:
+            if guild_id in self.populate_tasks:
+                del self.populate_tasks[guild_id]
 
     async def play_next_song(self, voice_client, guild_id, channel):
         if self.song_queues.get(guild_id):
@@ -37,14 +51,16 @@ class MusicCog(commands.Cog):
 
             voice_client.play(source, after=after_play)
             log_event("now_playing_sent", title=title)
-            asyncio.create_task(channel.send(f"Now playing: **{title}**"))
+            await channel.send(f"Now playing: **{title}**")
         else:
             log_event("queue_empty_disconnect", guild_id=guild_id)
             await voice_client.disconnect()
-            self.song_queues[guild_id] = deque()
+            if guild_id in self.song_queues:
+                self.song_queues[guild_id].clear()
+
 
     @app_commands.command(name="play", description="Play a song or add it to the queue.")
-    @app_commands.describe(song_query="Search query")
+    @app_commands.describe(song_query="Search query or URL")
     async def play(self, interaction: discord.Interaction, song_query: str):
         await interaction.response.defer()
         log_event(
@@ -66,32 +82,36 @@ class MusicCog(commands.Cog):
         elif voice_channel != voice_client.channel:
             await voice_client.move_to(voice_channel)
 
-        log_event(
-            "voice_connected_or_moved",
-            guild_id=interaction.guild_id,
-            channel_id=getattr(voice_channel, "id", None),
-            moved=bool(voice_client and voice_client.channel != voice_channel),
-            connected=bool(voice_client),
-        )
-
-        audio_url, title = await extract_audio(song_query)
-
-        if not audio_url:
-            await interaction.followup.send(f"No results found for: **{song_query}**")
-            return
-
         guild_id = str(interaction.guild_id)
         if self.song_queues.get(guild_id) is None:
             self.song_queues[guild_id] = deque()
 
-        log_event("enqueue", guild_id=interaction.guild_id, title=title, audio_url=audio_url)
-        self.song_queues[guild_id].append((audio_url, title))
+        song_generator = extract_audio(song_query)
 
-        if voice_client.is_playing() or voice_client.is_paused():
-            await interaction.followup.send(f"Added to queue: **{title}**")
+        try:
+            first_song = await anext(song_generator)
+        except StopAsyncIteration:
+            await interaction.followup.send(f"No results found for: **{song_query}**")
+            return
+
+        self.song_queues[guild_id].append(first_song)
+        log_event("enqueue", guild_id=guild_id, title=first_song[1])
+
+        is_playlist = "list=" in song_query
+        if is_playlist:
+            # Cancel any previous populate task for this guild
+            if guild_id in self.populate_tasks:
+                self.populate_tasks[guild_id].cancel()
+            
+            self.populate_tasks[guild_id] = asyncio.create_task(self._populate_queue(song_generator, guild_id))
+            await interaction.followup.send(f"Added playlist to queue. Starting with: **{first_song[1]}**")
         else:
-            log_event("start_playback", guild_id=interaction.guild_id, title=title)
-            await interaction.followup.send(f"Now playing: **{title}**")
+            if voice_client.is_playing() or voice_client.is_paused():
+                await interaction.followup.send(f"Added to queue: **{first_song[1]}**")
+            else:
+                await interaction.followup.send(f"Now playing: **{first_song[1]}**")
+
+        if not (voice_client.is_playing() or voice_client.is_paused()):
             await self.play_next_song(voice_client, guild_id, interaction.channel)
 
     @app_commands.command(name="skip", description="Skips the current playing song")
@@ -107,32 +127,24 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="pause", description="Pause the currently playing song.")
     async def pause(self, interaction: discord.Interaction):
         voice_client = interaction.guild.voice_client
-        if voice_client is None:
-            log_event("pause_no_voice", guild_id=interaction.guild_id)
-            return await safe_reply(interaction, "I'm not in a voice channel.")
-
-        if not voice_client.is_playing():
-            log_event("pause_no_playback", guild_id=interaction.guild_id)
-            return await safe_reply(interaction, "Nothing is currently playing.")
-        
-        voice_client.pause()
-        log_event("paused", guild_id=interaction.guild_id)
-        await safe_reply(interaction, "Playback paused!")
+        if voice_client and voice_client.is_playing():
+            voice_client.pause()
+            log_event("paused", guild_id=interaction.guild_id)
+            await safe_reply(interaction, "Playback paused!")
+        else:
+            log_event("pause_noop", guild_id=interaction.guild_id)
+            await safe_reply(interaction, "Nothing is currently playing to pause.")
 
     @app_commands.command(name="resume", description="Resume the currently paused song.")
     async def resume(self, interaction: discord.Interaction):
         voice_client = interaction.guild.voice_client
-        if voice_client is None:
-            log_event("resume_no_voice", guild_id=interaction.guild_id)
-            return await safe_reply(interaction, "I'm not in a voice channel.")
-
-        if not voice_client.is_paused():
-            log_event("resume_no_pause", guild_id=interaction.guild_id)
-            return await safe_reply(interaction, "I’m not paused right now.")
-        
-        voice_client.resume()
-        log_event("resumed", guild_id=interaction.guild_id)
-        await safe_reply(interaction, "Playback resumed!")
+        if voice_client and voice_client.is_paused():
+            voice_client.resume()
+            log_event("resumed", guild_id=interaction.guild_id)
+            await safe_reply(interaction, "Playback resumed!")
+        else:
+            log_event("resume_noop", guild_id=interaction.guild_id)
+            await safe_reply(interaction, "I’m not paused right now.")
 
     @app_commands.command(name="stop", description="Stop playback and clear the queue.")
     async def stop(self, interaction: discord.Interaction):
@@ -141,35 +153,41 @@ class MusicCog(commands.Cog):
                 await interaction.response.defer(ephemeral=True, thinking=False)
             except Exception:
                 pass
-        log_event("stop_called", guild_id=interaction.guild_id, channel_id=getattr(interaction.channel, "id", None))
+        
+        gid = str(interaction.guild_id)
+        log_event("stop_called", guild_id=gid, channel_id=getattr(interaction.channel, "id", None))
+
+        # Cancel any running populate task
+        if gid in self.populate_tasks:
+            self.populate_tasks[gid].cancel()
+            del self.populate_tasks[gid]
 
         vc = interaction.guild.voice_client
         if not vc or not vc.is_connected():
-            log_event("stop_no_voice", guild_id=interaction.guild_id)
+            log_event("stop_no_voice", guild_id=gid)
             await safe_reply(interaction, "I'm not connected to any voice channel.")
             return
 
-        gid = str(interaction.guild_id)
+        # Clear queue
         if gid in self.song_queues:
             self.song_queues[gid].clear()
-        log_event("queue_cleared", guild_id=interaction.guild_id)
+        log_event("queue_cleared", guild_id=gid)
 
-        try:
-            if vc.is_playing() or vc.is_paused():
-                log_event("stopping_playback", guild_id=interaction.guild_id)
-                vc.stop()
-        except Exception:
-            pass
+        # Stop play if needed
+        if vc.is_playing() or vc.is_paused():
+            log_event("stopping_playback", guild_id=gid)
+            vc.stop()
 
+        # Disconnect
         try:
             await asyncio.wait_for(vc.disconnect(), timeout=5)
-            log_event("disconnected", guild_id=interaction.guild_id)
+            log_event("disconnected", guild_id=gid)
         except asyncio.TimeoutError:
-            log_event("disconnect_timeout", guild_id=interaction.guild_id)
-            await safe_reply(interaction, "Stopped playback but disconnect timed out. Try again.")
+            log_event("disconnect_timeout", guild_id=gid)
+            await safe_reply(interaction, "Stopped playback but disconnect timed out.")
             return
         except Exception as e:
-            log_event("disconnect_error", guild_id=interaction.guild_id)
+            log_event("disconnect_error", guild_id=gid, error=str(e))
             await safe_reply(interaction, f"Stopped playback but error on disconnect: `{e}`")
             return
 
@@ -197,9 +215,11 @@ class MusicCog(commands.Cog):
             })
         except Exception as e:
             return await inter.followup.send(f"Erro ao extrair: `{e}`", ephemeral=True)
+        
         fmts = (info or {}).get("formats") or []
         if not fmts:
             return await inter.followup.send("Sem formats retornados.", ephemeral=True)
+
         def score(f):
             if f.get("vcodec") not in (None, "none"): return -1
             if not f.get("url"): return -1
@@ -215,11 +235,14 @@ class MusicCog(commands.Cog):
             try: s += int(f.get("abr") or 0)
             except Exception: pass
             return s
+        
         best = sorted(fmts, key=score, reverse=True)[:10]
         log_event("formats_list", count=len(best))
+        
         lines = []
         for f in best:
             lines.append(f"{f.get('format_id')} | {f.get('ext')} | {f.get('acodec')} | {f.get('abr')}kbps | {f.get('protocol')}")
+        
         await inter.followup.send("Top formatos de áudio:\n```\n" + "\n".join(lines) + "\n```", ephemeral=True)
 
 async def setup(bot):
