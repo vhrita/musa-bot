@@ -89,6 +89,10 @@ async def extract_info(query: str):
         search_query = f"ytsearch1:{search_query}"
 
     log_event("extract_info_start", query=search_query)
+    
+    # Log das opções do yt-dlp para debug
+    ydl_options_debug = {k: v for k, v in ydl_options.items() if k != 'cookiefile'}
+    log_event("ytdlp_options_debug", options=ydl_options_debug, has_cookies=bool(COOKIES_PATH))
 
     try:
         with temporary_proxy_opener():
