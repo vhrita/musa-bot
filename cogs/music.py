@@ -13,6 +13,9 @@ from config import (
     YOUTUBE_PRIORITY, INTERNET_ARCHIVE_PRIORITY, RADIO_PRIORITY
 )
 
+# Canal específico onde a Musa pode responder
+MUSA_CHANNEL_ID = 1411119201556496414
+
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -24,6 +27,27 @@ class MusicCog(commands.Cog):
         
         # Configure services based on environment variables
         self._configure_services()
+
+    async def _check_musa_channel(self, interaction: discord.Interaction) -> bool:
+        """Verifica se o comando está sendo usado no canal correto da Musa."""
+        if interaction.channel.id != MUSA_CHANNEL_ID:
+            embed = discord.Embed(
+                title="🧚‍♀️ Canal Incorreto",
+                description=f"Eu só respondo comandos no canal <#{MUSA_CHANNEL_ID}>!",
+                color=discord.Color.purple()
+            )
+            embed.set_footer(text="Use os comandos no canal dedicado da Musa")
+            
+            try:
+                # Try to send as initial response if not deferred yet
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        return True
 
     def _configure_services(self):
         """Configure services based on environment variables."""
@@ -260,6 +284,10 @@ class MusicCog(commands.Cog):
     @app_commands.describe(song_query="Search query or URL")
     async def play(self, interaction: discord.Interaction, song_query: str):
         """Play music from various sources (excluding radio)."""
+        # Verificar canal correto ANTES do defer
+        if not await self._check_musa_channel(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -375,6 +403,10 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="skip", description="Skips the current playing song")
     async def skip(self, interaction: discord.Interaction):
+        # Verificar canal correto ANTES do defer
+        if not await self._check_musa_channel(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -398,6 +430,16 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="pause", description="Pause the currently playing song.")
     async def pause(self, interaction: discord.Interaction):
+        # Verificar canal correto ANTES do defer
+        if not await self._check_musa_channel(interaction):
+            return
+            
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -440,6 +482,16 @@ class MusicCog(commands.Cog):
         except discord.HTTPException:
             # Interaction already acknowledged
             pass
+            
+        # Verificar canal correto
+        if not await self._check_musa_channel(interaction):
+            return
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         voice_client = interaction.guild.voice_client
         guild_id = str(interaction.guild_id)
@@ -470,6 +522,16 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="stop", description="Stop playback and clear the queue.")
     async def stop(self, interaction: discord.Interaction):
+        # Verificar canal correto ANTES do defer
+        if not await self._check_musa_channel(interaction):
+            return
+            
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -659,6 +721,16 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="queue", description="Show the current music queue")
     async def queue(self, interaction: discord.Interaction):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
+            
+        # Verificar canal correto
+        if not await self._check_musa_channel(interaction):
+            return
         """Display the current music queue with now playing and upcoming songs."""
         try:
             if not interaction.response.is_done():
@@ -710,6 +782,10 @@ class MusicCog(commands.Cog):
     @app_commands.describe(genre="Radio genre (pop, rock, jazz, classical, electronic, news, talk, country, reggae, latin)")
     async def radio(self, interaction: discord.Interaction, genre: str):
         """Play radio stations by genre."""
+        # Verificar canal correto ANTES do defer
+        if not await self._check_musa_channel(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
