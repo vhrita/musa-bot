@@ -37,6 +37,9 @@ async def extract_info(query: str):
     }
     if COOKIES_PATH:
         ydl_options["cookiefile"] = COOKIES_PATH
+        log_event("youtube_cookies_loaded", path=COOKIES_PATH)
+    else:
+        log_event("youtube_cookies_not_found", path=COOKIES_PATH)
 
     search_query = query.strip()
     if not search_query.startswith(("http://", "https://")):
