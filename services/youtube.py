@@ -26,7 +26,13 @@ def temporary_proxy_opener():
     opener = urllib.request.build_opener(proxy_handler)
     urllib.request.install_opener(opener)
     
+    # Log para verificar se o proxy está ativo
     try:
+        current_opener = urllib.request._opener
+        log_event("proxy_opener_installed", 
+                 has_original=bool(original_opener),
+                 has_current=bool(current_opener),
+                 proxy_url=YTDLP_PROXY if YTDLP_PROXY else None)
         yield
     finally:
         log_event("restoring_original_opener")
@@ -120,21 +126,57 @@ async def extract_info(query: str):
                         
                         # Extrair info completa do vídeo específico com logs detalhados
                         try:
+                            log_event("video_extraction_attempt", 
+                                     video_id=video_id, 
+                                     url=f"https://www.youtube.com/watch?v={video_id}",
+                                     proxy_in_use=bool(YTDLP_PROXY))
+                            
+                            # Usar a mesma instância ydl que já está com proxy configurado
                             video_result = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                            
                             log_event("video_extraction_success", video_id=video_id, has_result=bool(video_result))
                             
                             # Log detalhado do que foi extraído
                             if video_result:
+                                formats = video_result.get('formats', [])
                                 log_event("video_extraction_details",
                                          video_id=video_id,
-                                         formats_count=len(video_result.get('formats', [])),
+                                         formats_count=len(formats),
                                          has_url=bool(video_result.get('url')),
                                          has_formats_key='formats' in video_result,
-                                         video_keys_sample=list(video_result.keys())[:20] if video_result else None
+                                         video_keys_sample=list(video_result.keys())[:20] if video_result else None,
+                                         has_duration=bool(video_result.get('duration')),
+                                         extractor_used=video_result.get('extractor'),
+                                         proxy_was_active=bool(YTDLP_PROXY)
                                 )
+                                
+                                # Log específico sobre formatos se existirem
+                                if formats:
+                                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                                    video_formats = [f for f in formats if f.get('vcodec') != 'none']
+                                    log_event("video_formats_available", 
+                                             total_formats=len(formats),
+                                             audio_formats=len(audio_formats),
+                                             video_formats=len(video_formats),
+                                             sample_audio_format=audio_formats[0] if audio_formats else None,
+                                             has_manifest_url=any('manifest' in f.get('protocol', '') for f in formats)
+                                    )
+                                else:
+                                    log_event("video_formats_missing", 
+                                             formats_list_exists='formats' in video_result,
+                                             formats_value=video_result.get('formats'),
+                                             possible_drm=video_result.get('_has_drm'),
+                                             availability=video_result.get('availability'),
+                                             age_limit=video_result.get('age_limit'),
+                                             live_status=video_result.get('live_status')
+                                    )
                             
                         except Exception as video_error:
-                            log_event("video_extraction_error", video_id=video_id, error=str(video_error))
+                            log_event("video_extraction_error", 
+                                     video_id=video_id, 
+                                     error=str(video_error), 
+                                     error_type=type(video_error).__name__,
+                                     proxy_was_active=bool(YTDLP_PROXY))
                             video_result = None
                         
                         if video_result and 'formats' in video_result:
