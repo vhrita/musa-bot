@@ -110,3 +110,10 @@ dmypy.json
 
 # pytype
 .pytype/
+
+# Custom project ignores
+# Ignore contents of cookies and logs directories, but keep the directories
+cookies/*
+!cookies/.keep
+logs/*
+!logs/.keep
