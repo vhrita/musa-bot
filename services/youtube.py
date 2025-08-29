@@ -33,6 +33,35 @@ def temporary_proxy_opener():
                  has_original=bool(original_opener),
                  has_current=bool(current_opener),
                  proxy_url=YTDLP_PROXY if YTDLP_PROXY else None)
+        
+        # Testar conectividade do proxy
+        if YTDLP_PROXY:
+            try:
+                import socket
+                from urllib.parse import urlparse
+                
+                # Extrair host e porta do proxy
+                parsed = urlparse(YTDLP_PROXY)
+                proxy_host = parsed.hostname
+                proxy_port = parsed.port
+                
+                # Teste de conectividade TCP
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                result = sock.connect_ex((proxy_host, proxy_port))
+                sock.close()
+                
+                log_event("proxy_connectivity_test",
+                         proxy_host=proxy_host,
+                         proxy_port=proxy_port,
+                         connection_successful=(result == 0),
+                         error_code=result if result != 0 else None)
+                
+            except Exception as proxy_test_error:
+                log_event("proxy_connectivity_error",
+                         error=str(proxy_test_error),
+                         error_type=type(proxy_test_error).__name__)
+        
         yield
     finally:
         log_event("restoring_original_opener")
