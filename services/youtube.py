@@ -1,7 +1,33 @@
 import asyncio
 import yt_dlp
-from config import COOKIES_PATH
+from config import COOKIES_PATH, YTDLP_PROXY
 from utils.logging import log_event
+
+def get_ydl_options():
+    """Returns a dictionary with base yt-dlp options."""
+    options = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "no_warnings": True,
+        "ignore_no_formats_error": True,
+        "geo_bypass": True,
+        "source_address": "0.0.0.0",
+        "retries": 2,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web", "tv"]
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.youtube.com/"
+        }
+    }
+    if YTDLP_PROXY:
+        options["proxy"] = YTDLP_PROXY
+        log_event("youtube_proxy_enabled", proxy=YTDLP_PROXY)
+    return options
 
 async def search_ytdlp_async(query, ydl_opts):
     loop = asyncio.get_running_loop()
@@ -14,27 +40,13 @@ def _extract(query, ydl_opts):
 async def extract_info(query: str):
     is_playlist = "list=" in query and query.strip().startswith(("http://", "https://"))
     
-    ydl_options = {
-        "format": "bestaudio/best",
+    ydl_options = get_ydl_options()
+    ydl_options.update({
         "noplaylist": not is_playlist,
-        "quiet": True,
-        "no_warnings": True,
         "extract_flat": is_playlist,
         "default_search": "ytsearch1",
-        "ignore_no_formats_error": True,
-        "geo_bypass": True,
-        "source_address": "0.0.0.0",
-        "retries": 2,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web", "tv"]
-            }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-    }
+    })
+
     if COOKIES_PATH:
         ydl_options["cookiefile"] = COOKIES_PATH
         log_event("youtube_cookies_loaded", path=COOKIES_PATH)
@@ -60,27 +72,11 @@ async def extract_info(query: str):
         return [results]
 
 async def resolve_song(song_info: dict):
-    ydl_options = {
-        "format": "bestaudio/best",
-        "quiet": True,
-        "no_warnings": True,
-        "ignore_no_formats_error": True,
-        "geo_bypass": True,
-        "source_address": "0.0.0.0",
-        "retries": 2,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "ios", "web", "tv"]
-            }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-    }
+    ydl_options = get_ydl_options()
+
     if COOKIES_PATH:
         ydl_options["cookiefile"] = COOKIES_PATH
-
+    
     try:
         track_url = song_info.get("url") or song_info.get("webpage_url")
         if not track_url:
@@ -125,7 +121,7 @@ async def resolve_song(song_info: dict):
         if candidate and "youtube.com/watch" not in candidate:
             audio_url = candidate
 
-    if audio_url and not any(x in audio_url for x in ["googleusercontent.com/thumbnail", "storyboard"]):
+    if audio_url and not any(x in audio_url for x in ['''googleusercontent.com/thumbnail''', '''storyboard''']):
         return {
             "url": audio_url, 
             "title": title, 
