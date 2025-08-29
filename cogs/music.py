@@ -8,7 +8,7 @@ import random
 from utils.logging import log_event
 from utils.discord_utils import safe_reply
 from services.youtube import extract_info, resolve_song, search_ytdlp_async
-from config import COOKIES_PATH
+from config import COOKIES_PATH, YTDLP_PROXY
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
@@ -34,7 +34,12 @@ class MusicCog(commands.Cog):
     async def play_next_song(self, voice_client, guild_id, channel):
         if self.song_queues.get(guild_id):
             unresolved_song = self.song_queues[guild_id].popleft()
-            song = await resolve_song(unresolved_song)
+            log_event("play_next_song_processing", 
+                     title=unresolved_song.get("title"),
+                     has_formats=bool(unresolved_song.get("formats")),
+                     song_keys=list(unresolved_song.keys()) if isinstance(unresolved_song, dict) else None)
+            
+            song = resolve_song(unresolved_song)  # Removido await pois agora é função síncrona
 
             if not song:
                 log_event("resolve_failed", guild_id=guild_id, info=unresolved_song)
@@ -54,16 +59,30 @@ class MusicCog(commands.Cog):
                 ),
                 "options": "-vn"
             }
+            
+            # Tentativa sem proxy no ffmpeg - proxy apenas para metadados
+            # if YTDLP_PROXY:
+            #     ffmpeg_options['before_options'] += f' -http_proxy "{YTDLP_PROXY}"'
+            #     log_event("ffmpeg_proxy_enabled", proxy=YTDLP_PROXY)
+            
+            log_event("ffmpeg_no_proxy_attempt")
+
+            log_event("ffmpeg_starting", 
+                     url_domain=song['url'].split('/')[2] if '/' in song['url'] else None,
+                     ffmpeg_options=ffmpeg_options)
 
             source = discord.FFmpegOpusAudio(song['url'], **ffmpeg_options, executable="ffmpeg")
 
             def after_play(error):
                 if error:
                     log_event("ffmpeg_error", title=song['title'], error=str(error))
+                else:
+                    log_event("ffmpeg_finished", title=song['title'])
                 self.current_song.pop(guild_id, None)
                 asyncio.run_coroutine_threadsafe(self.play_next_song(voice_client, guild_id, channel), self.bot.loop)
 
             voice_client.play(source, after=after_play)
+            log_event("playback_started", title=song['title'])
             await channel.send(f"Now playing: **{song['title']}**")
         else:
             log_event("queue_empty_disconnect", guild_id=guild_id)
@@ -76,7 +95,8 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="play", description="Play a song or add it to the queue.")
     @app_commands.describe(song_query="Search query or URL")
     async def play(self, interaction: discord.Interaction, song_query: str):
-        await interaction.response.defer()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         log_event(
             "play_called",
             guild_id=interaction.guild_id,
