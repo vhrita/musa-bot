@@ -57,6 +57,20 @@ def temporary_proxy_opener():
                          connection_successful=(result == 0),
                          error_code=result if result != 0 else None)
                 
+                # Test what IP YouTube sees us as
+                if result == 0:  # Only if proxy connection successful
+                    try:
+                        import json
+                        
+                        # Test IP detection through proxy
+                        req = urllib.request.Request('https://httpbin.org/ip', 
+                                                   headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'})
+                        with urllib.request.urlopen(req, timeout=10) as response:
+                            ip_data = json.loads(response.read().decode())
+                            log_event("proxy_ip_check", detected_ip=ip_data.get('origin'), source="httpbin")
+                    except Exception as ip_test_error:
+                        log_event("proxy_ip_check_failed", error=str(ip_test_error))
+                
             except Exception as proxy_test_error:
                 log_event("proxy_connectivity_error",
                          error=str(proxy_test_error),
@@ -70,19 +84,19 @@ def temporary_proxy_opener():
 def get_ydl_options():
     """Returns a dictionary with base yt-dlp options."""
     return {
-        "format": "bestaudio/best",
+        "format": "bestaudio/best", 
         "quiet": True,
         "no_warnings": True,
         "ignore_no_formats_error": True,
         "geo_bypass": True,
-        "retries": 2,
+        "retries": 3,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web", "tv"]
+                "player_client": ["android", "ios", "web"]
             }
         },
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://www.youtube.com/"
         }
@@ -285,15 +299,24 @@ def resolve_song(song_info: dict):
 
     if fmts:
         def score(f):
-            if f.get("vcodec") not in (None, "none"): return -1
-            if not f.get("url"): return -1
+            # Aceitar qualquer formato que tenha áudio válido, independente do vcodec
+            acodec = f.get("acodec") or ""
+            if acodec in ("none", "") or not f.get("url"): 
+                return -1
+            
             s = 0
-            ac = (f.get("acodec") or "").lower()
+            ac = acodec.lower()
             ext = (f.get("ext") or "").lower()
             proto = (f.get("protocol") or "")
+            
+            # Bonificar formatos apenas áudio
+            if f.get("vcodec") in (None, "none"):
+                s += 10
+            
+            # Bonificar qualidade de áudio
             if ac.startswith(("opus", "vorbis")): s += 6
             if ac.startswith(("mp4a", "aac")): s += 5
-            if ext in ("webm", "m4a"): s += 5
+            if ext in ("webm", "m4a", "mp4"): s += 5
             if proto.startswith("https"): s += 3
             elif proto.startswith("http"): s += 1
             try: s += int(f.get("abr") or 0)
@@ -312,12 +335,14 @@ def resolve_song(song_info: dict):
                  } for f in best[:3]])
         
         for f in best:
-            if f.get("vcodec") in (None, "none") and f.get("url"):
+            acodec = f.get("acodec") or ""
+            if acodec not in ("none", "") and f.get("url"):
                 audio_url = f["url"]
                 log_event("resolve_song_selected_format",
                          format_id=f.get("format_id"),
                          ext=f.get("ext"),
                          acodec=f.get("acodec"),
+                         vcodec=f.get("vcodec"),
                          url_domain=audio_url.split('/')[2] if '/' in audio_url else None)
                 break
 
