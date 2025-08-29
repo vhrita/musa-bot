@@ -118,6 +118,17 @@ async def extract_info(query: str):
                         try:
                             video_result = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                             log_event("video_extraction_success", video_id=video_id, has_result=bool(video_result))
+                            
+                            # Log detalhado do que foi extraído
+                            if video_result:
+                                log_event("video_extraction_details",
+                                         video_id=video_id,
+                                         formats_count=len(video_result.get('formats', [])),
+                                         has_url=bool(video_result.get('url')),
+                                         has_formats_key='formats' in video_result,
+                                         video_keys_sample=list(video_result.keys())[:20] if video_result else None
+                                )
+                            
                         except Exception as video_error:
                             log_event("video_extraction_error", video_id=video_id, error=str(video_error))
                             video_result = None
