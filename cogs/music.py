@@ -44,20 +44,83 @@ class MusicCog(commands.Cog):
                  enabled_services=len(self.music_manager.get_enabled_services()))
 
     async def _set_activity(self, song, channel):
-        activity = discord.Activity(
-            type=discord.ActivityType.listening,
-            name=song['title'],
-            details=f"In: {channel.name}"
-        )
-        await self.bot.change_presence(activity=activity)
+        """Set enhanced activity status with detailed music information."""
+        try:
+            # Get service-specific information
+            service_name = song.get('service', 'Unknown')
+            service_emoji = self._get_service_emoji(song.get('service'))
+            
+            # Prepare song details (respecting Discord limits)
+            title = song.get('title', 'Unknown Song')[:80]  # Discord name limit
+            creator = song.get('creator', 'Unknown Artist')[:50]
+            
+            # Build activity name with service info
+            if song.get('is_live_stream'):
+                activity_name = f"🔴 {title}"
+                activity_state = f"{service_emoji} LIVE on {service_name.title()}"
+            else:
+                activity_name = title
+                activity_state = f"{service_emoji} {service_name.title()}"
+            
+            # Add creator info if available and different from title
+            if creator and creator.lower() not in title.lower():
+                activity_details = f"By {creator} • #{channel.name}"
+            else:
+                activity_details = f"In #{channel.name}"
+            
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=activity_name,
+                state=activity_state,
+                details=activity_details
+            )
+            
+            await self.bot.change_presence(activity=activity, status=discord.Status.online)
+            log_event("activity_updated", title=title, service=service_name, channel=channel.name)
+            
+        except Exception as e:
+            log_event("activity_update_error", error=str(e))
+            # Fallback to simple activity
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=song.get('title', 'Unknown Song')[:80]
+            )
+            await self.bot.change_presence(activity=activity)
+
+    async def _set_paused_activity(self, song, channel):
+        """Set activity status when music is paused."""
+        try:
+            service_emoji = self._get_service_emoji(song.get('service'))
+            title = song.get('title', 'Unknown Song')[:80]
+            
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=f"⏸️ {title}",
+                state=f"{service_emoji} Pausado",
+                details=f"In #{channel.name}"
+            )
+            
+            await self.bot.change_presence(activity=activity, status=discord.Status.idle)
+            log_event("activity_paused", title=title)
+            
+        except Exception as e:
+            log_event("activity_pause_error", error=str(e))
 
     async def _clear_activity(self):
-        activity = discord.Activity(
-            type=discord.ActivityType.listening, 
-            name="um silêncio ensurdecedor"
-        )
-        await self.bot.change_presence(activity=activity)
-
+        """Clear activity when no music is playing."""
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.listening, 
+                name="um silêncio ensurdecedor",
+                state="🧚‍♀️ Musa em standby",
+                details="Pronta para tocar música"
+            )
+            await self.bot.change_presence(activity=activity, status=discord.Status.online)
+            log_event("activity_cleared")
+            
+        except Exception as e:
+            log_event("activity_clear_error", error=str(e))
+    
     async def play_next_song(self, voice_client, guild_id, channel):
         if self.song_queues.get(guild_id):
             unresolved_song = self.song_queues[guild_id].popleft()
@@ -197,8 +260,13 @@ class MusicCog(commands.Cog):
     @app_commands.describe(song_query="Search query or URL")
     async def play(self, interaction: discord.Interaction, song_query: str):
         """Play music from various sources (excluding radio)."""
-        if not interaction.response.is_done():
-            await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
+        
         log_event(
             "play_called",
             guild_id=interaction.guild_id,
@@ -217,6 +285,21 @@ class MusicCog(commands.Cog):
             voice_client = await voice_channel.connect()
         elif voice_channel != voice_client.channel:
             await voice_client.move_to(voice_channel)
+        else:
+            # Check if voice_client is actually functional after container restart
+            try:
+                # Test if voice_client is responsive
+                if not hasattr(voice_client, 'is_connected') or not voice_client.is_connected():
+                    # Reconnect if not properly connected
+                    await voice_client.disconnect()
+                    voice_client = await voice_channel.connect()
+            except Exception:
+                # If any error occurs, reconnect
+                try:
+                    await voice_client.disconnect()
+                except Exception:
+                    pass
+                voice_client = await voice_channel.connect()
 
         guild_id = str(interaction.guild_id)
         if self.song_queues.get(guild_id) is None:
@@ -292,7 +375,12 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="skip", description="Skips the current playing song")
     async def skip(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         if interaction.guild.voice_client and (interaction.guild.voice_client.is_playing() or interaction.guild.voice_client.is_paused()):
             log_event("skip", guild_id=interaction.guild_id, channel_id=getattr(interaction.channel, "id", None))
@@ -310,7 +398,12 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="pause", description="Pause the currently playing song.")
     async def pause(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         voice_client = interaction.guild.voice_client
         guild_id = str(interaction.guild_id)
@@ -318,6 +411,11 @@ class MusicCog(commands.Cog):
         if voice_client and voice_client.is_playing():
             voice_client.pause()
             log_event("paused", guild_id=guild_id)
+            
+            # Update activity status to show paused
+            current_song = self.current_song.get(guild_id)
+            if current_song:
+                await self._set_paused_activity(current_song, interaction.channel)
             
             # Show queue with pause status
             embed = await self._create_queue_embed(guild_id)
@@ -336,7 +434,12 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="resume", description="Resume the currently paused song.")
     async def resume(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         voice_client = interaction.guild.voice_client
         guild_id = str(interaction.guild_id)
@@ -344,6 +447,11 @@ class MusicCog(commands.Cog):
         if voice_client and voice_client.is_paused():
             voice_client.resume()
             log_event("resumed", guild_id=guild_id)
+            
+            # Update activity status to show playing again
+            current_song = self.current_song.get(guild_id)
+            if current_song:
+                await self._set_activity(current_song, interaction.channel)
             
             # Show queue with resumed status
             embed = await self._create_queue_embed(guild_id)
@@ -362,13 +470,18 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="stop", description="Stop playback and clear the queue.")
     async def stop(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         gid = str(interaction.guild_id)
         log_event("stop_called", guild_id=gid, channel_id=getattr(interaction.channel, "id", None))
 
         vc = interaction.guild.voice_client
-        if not vc or not vc.is_connected():
+        if not vc:
             log_event("stop_no_voice", guild_id=gid)
             embed = discord.Embed(
                 title="⏹️ Stop",
@@ -448,7 +561,12 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="sources", description="Show status of all music sources")
     async def sources(self, interaction: discord.Interaction):
         """Show the status of all music sources."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         log_event("sources_command_called", guild_id=interaction.guild_id)
         
@@ -490,7 +608,12 @@ class MusicCog(commands.Cog):
     @app_commands.describe(query="Search query")
     async def search_all(self, interaction: discord.Interaction, query: str):
         """Search all sources and show results from each."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         log_event("search_all_command_called", guild_id=interaction.guild_id, query=query)
         
@@ -537,7 +660,12 @@ class MusicCog(commands.Cog):
     @app_commands.command(name="queue", description="Show the current music queue")
     async def queue(self, interaction: discord.Interaction):
         """Display the current music queue with now playing and upcoming songs."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         guild_id = str(interaction.guild_id)
         log_event("queue_command_called", guild_id=guild_id)
@@ -582,8 +710,12 @@ class MusicCog(commands.Cog):
     @app_commands.describe(genre="Radio genre (pop, rock, jazz, classical, electronic, news, talk, country, reggae, latin)")
     async def radio(self, interaction: discord.Interaction, genre: str):
         """Play radio stations by genre."""
-        if not interaction.response.is_done():
-            await interaction.response.defer()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except discord.HTTPException:
+            # Interaction already acknowledged
+            pass
         
         log_event(
             "radio_called",
@@ -603,6 +735,21 @@ class MusicCog(commands.Cog):
             voice_client = await voice_channel.connect()
         elif voice_channel != voice_client.channel:
             await voice_client.move_to(voice_channel)
+        else:
+            # Check if voice_client is actually functional after container restart
+            try:
+                # Test if voice_client is responsive
+                if not hasattr(voice_client, 'is_connected') or not voice_client.is_connected():
+                    # Reconnect if not properly connected
+                    await voice_client.disconnect()
+                    voice_client = await voice_channel.connect()
+            except Exception:
+                # If any error occurs, reconnect
+                try:
+                    await voice_client.disconnect()
+                except Exception:
+                    pass
+                voice_client = await voice_channel.connect()
 
         guild_id = str(interaction.guild_id)
         if self.song_queues.get(guild_id) is None:
