@@ -65,13 +65,17 @@ async def search_ytdlp_async(query, ydl_opts):
         return await loop.run_in_executor(None, _extract)
 
 async def extract_info(query: str):
-    is_playlist = "list=" in query and query.strip().startswith(("http://", "https://"))
+    # Log de debug do ambiente
+    log_event("debug_environment", 
+             proxy_configured=bool(YTDLP_PROXY),
+             proxy_value=YTDLP_PROXY[:50] + "..." if YTDLP_PROXY and len(YTDLP_PROXY) > 50 else YTDLP_PROXY,
+             cookies_path=COOKIES_PATH)
     
     ydl_options = get_ydl_options()
     ydl_options.update({
-        "noplaylist": not is_playlist,
-        "extract_flat": is_playlist,
-        "default_search": "ytsearch1",
+        "noplaylist": True,  # Sempre uma música só
+        "extract_flat": False,  # Extrair info completa
+        "default_search": "ytsearch1",  # Apenas 1 resultado
     })
 
     if COOKIES_PATH:
@@ -110,8 +114,13 @@ async def extract_info(query: str):
                         video_id = first_entry['id']
                         log_event("extract_info_extracting_video", video_id=video_id)
                         
-                        # Extrair info completa do vídeo específico
-                        video_result = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                        # Extrair info completa do vídeo específico com logs detalhados
+                        try:
+                            video_result = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                            log_event("video_extraction_success", video_id=video_id, has_result=bool(video_result))
+                        except Exception as video_error:
+                            log_event("video_extraction_error", video_id=video_id, error=str(video_error))
+                            video_result = None
                         
                         if video_result and 'formats' in video_result:
                             formats = video_result.get('formats', [])
@@ -132,6 +141,10 @@ async def extract_info(query: str):
                             final_result = [video_result]
                             log_event("extract_info_returning", count=len(final_result), type="video_complete")
                             return final_result
+                        else:
+                            log_event("video_extraction_no_formats", 
+                                     has_video_result=bool(video_result),
+                                     video_keys=list(video_result.keys()) if video_result else None)
                 
                 # Fallback para resultado direto
                 if result and 'formats' in result:
