@@ -21,6 +21,8 @@ class MusicCog(commands.Cog):
         self.bot = bot
         self.song_queues = {}
         self.current_song = {}
+        self.inactivity_timers = {}  # Para controlar timers de inatividade
+        self.empty_channel_timers = {}  # Para controlar timers de canal vazio
         
         # Initialize multi-source manager
         self.music_manager = MultiSourceManager()
@@ -49,6 +51,153 @@ class MusicCog(commands.Cog):
             return False
         return True
 
+    async def _check_voice_requirements(self, interaction: discord.Interaction, command_type: str = "music") -> bool:
+        """
+        Verifica os requisitos de canal de voz para comandos de música.
+        
+        Args:
+            interaction: A interação do Discord
+            command_type: Tipo do comando ('music' para comandos que precisam de voz)
+        
+        Returns:
+            bool: True se os requisitos foram atendidos, False caso contrário
+        """
+        # Verificar se usuário está em um canal de voz
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            embed = discord.Embed(
+                title="🔊 Canal de Voz Necessário",
+                description="Você precisa estar conectado em um canal de voz para usar este comando!",
+                color=discord.Color.red()
+            )
+            embed.set_footer(text="Entre em um canal de voz e tente novamente")
+            
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        
+        # Se o bot já está conectado, verificar se usuário está no mesmo canal
+        voice_client = interaction.guild.voice_client
+        if voice_client and voice_client.channel:
+            user_channel = interaction.user.voice.channel
+            bot_channel = voice_client.channel
+            
+            if user_channel != bot_channel:
+                embed = discord.Embed(
+                    title="🎵 Canal Ocupado",
+                    description=f"Estou tocando música no canal **{bot_channel.name}**!\nVenha para o mesmo canal para usar os comandos.",
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text="Entre no canal onde estou tocando para controlar a música")
+                
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                    else:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                except discord.HTTPException:
+                    pass
+                return False
+        
+        return True
+
+    def _start_inactivity_timer(self, guild_id: str, voice_client):
+        """Inicia um timer de inatividade para desconectar o bot após 60 segundos sem música."""
+        # Cancelar timer anterior se existir
+        self._cancel_inactivity_timer(guild_id)
+        
+        async def disconnect_after_timeout():
+            await asyncio.sleep(60)  # 60 segundos de inatividade
+            try:
+                if guild_id in self.inactivity_timers:
+                    # Verificar se ainda não há música tocando
+                    if voice_client and not voice_client.is_playing() and not voice_client.is_paused():
+                        log_event("auto_disconnect_inactivity", guild_id=guild_id)
+                        await voice_client.disconnect()
+                        
+                        # Limpar estado
+                        if guild_id in self.current_song:
+                            del self.current_song[guild_id]
+                        if guild_id in self.song_queues:
+                            self.song_queues[guild_id].clear()
+                        
+                        # Limpar atividade do Discord
+                        await self._clear_activity()
+                        
+                    # Remover timer
+                    if guild_id in self.inactivity_timers:
+                        del self.inactivity_timers[guild_id]
+            except Exception as e:
+                log_event("auto_disconnect_error", guild_id=guild_id, error=str(e))
+        
+        # Criar e armazenar a task
+        task = asyncio.create_task(disconnect_after_timeout())
+        self.inactivity_timers[guild_id] = task
+        
+        log_event("inactivity_timer_started", guild_id=guild_id, timeout_seconds=60)
+
+    def _cancel_inactivity_timer(self, guild_id: str):
+        """Cancela o timer de inatividade se existir."""
+        if guild_id in self.inactivity_timers:
+            self.inactivity_timers[guild_id].cancel()
+            del self.inactivity_timers[guild_id]
+            log_event("inactivity_timer_cancelled", guild_id=guild_id)
+
+    def _check_voice_channel_has_users(self, voice_client) -> bool:
+        """Verifica se há usuários reais (não bots) no canal de voz."""
+        if not voice_client or not voice_client.channel:
+            return False
+        
+        # Contar apenas usuários que não são bots
+        real_users = [member for member in voice_client.channel.members if not member.bot]
+        return len(real_users) > 0
+
+    def _start_empty_channel_timer(self, guild_id: str, voice_client):
+        """Inicia timer para desconectar quando não há usuários no canal."""
+        async def empty_channel_disconnect():
+            try:
+                await asyncio.sleep(30)  # Aguardar 30 segundos
+                
+                # Verificar novamente se ainda não há usuários
+                if not self._check_voice_channel_has_users(voice_client):
+                    log_event("empty_channel_auto_disconnect", guild_id=guild_id)
+                    
+                    # Limpar estado
+                    if guild_id in self.song_queues:
+                        self.song_queues[guild_id].clear()
+                    self.current_song.pop(guild_id, None)
+                    await self._clear_activity()
+                    
+                    # Desconectar
+                    if voice_client.is_connected():
+                        await voice_client.disconnect()
+                    
+                    # Remover timer
+                    if guild_id in self.empty_channel_timers:
+                        del self.empty_channel_timers[guild_id]
+                        
+            except Exception as e:
+                log_event("empty_channel_timer_error", guild_id=guild_id, error=str(e))
+        
+        # Cancelar timer existente
+        self._cancel_empty_channel_timer(guild_id)
+        
+        # Criar novo timer
+        task = asyncio.create_task(empty_channel_disconnect())
+        self.empty_channel_timers[guild_id] = task
+        log_event("empty_channel_timer_started", guild_id=guild_id, timeout_seconds=120)
+
+    def _cancel_empty_channel_timer(self, guild_id: str):
+        """Cancela o timer de canal vazio se existir."""
+        if guild_id in self.empty_channel_timers:
+            self.empty_channel_timers[guild_id].cancel()
+            del self.empty_channel_timers[guild_id]
+            log_event("empty_channel_timer_cancelled", guild_id=guild_id)
+
     def _configure_services(self):
         """Configure services based on environment variables."""
         # Configure service availability
@@ -66,6 +215,39 @@ class MusicCog(commands.Cog):
         
         log_event("music_cog_configured",
                  enabled_services=len(self.music_manager.get_enabled_services()))
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        """Detecta quando usuários saem do canal de voz para verificar se deve pausar."""
+        # Ignorar mudanças do próprio bot
+        if member.bot:
+            return
+        
+        guild_id = str(member.guild.id)
+        voice_client = member.guild.voice_client
+        
+        # Se o bot não está conectado, não há nada para verificar
+        if not voice_client or not voice_client.channel:
+            return
+        
+        # Verificar se alguém saiu do canal onde o bot está tocando
+        # Isso inclui: sair completamente ou mudar para outro canal
+        if (before.channel and before.channel.id == voice_client.channel.id and
+            (not after.channel or after.channel.id != voice_client.channel.id)):
+            
+            # Se o bot está tocando música
+            if voice_client.is_playing() or voice_client.is_paused():
+                # Verificar se ainda há usuários no canal
+                if not self._check_voice_channel_has_users(voice_client):
+                    log_event("all_users_left_channel", guild_id=guild_id, channel_id=voice_client.channel.id)
+                    self._start_empty_channel_timer(guild_id, voice_client)
+        
+        # Verificar se alguém entrou no canal onde o bot está (cancelar timer)
+        elif (after.channel and after.channel.id == voice_client.channel.id):
+            # Cancelar timer de canal vazio se existir
+            if guild_id in self.empty_channel_timers:
+                self._cancel_empty_channel_timer(guild_id)
+                log_event("user_returned_timer_cancelled", guild_id=guild_id, user_id=member.id)
 
     async def _set_activity(self, song, channel):
         """Set enhanced activity status with detailed music information."""
@@ -146,6 +328,12 @@ class MusicCog(commands.Cog):
             log_event("activity_clear_error", error=str(e))
     
     async def play_next_song(self, voice_client, guild_id, channel):
+        # Cancelar timer de inatividade se existir (música está prestes a tocar)
+        self._cancel_inactivity_timer(guild_id)
+        
+        # Cancelar timer de canal vazio se existir (música está prestes a tocar)
+        self._cancel_empty_channel_timer(guild_id)
+        
         if self.song_queues.get(guild_id):
             unresolved_song = self.song_queues[guild_id].popleft()
             log_event("play_next_song_processing", 
@@ -203,12 +391,10 @@ class MusicCog(commands.Cog):
             embed.set_footer(text="Use /play to add more songs • /queue to see full list")
             await channel.send(embed=embed)
         else:
-            log_event("queue_empty_disconnect", guild_id=guild_id)
+            # Fila vazia - iniciar timer de inatividade em vez de desconectar imediatamente
+            log_event("queue_empty_starting_inactivity_timer", guild_id=guild_id)
             await self._clear_activity()
-            await voice_client.disconnect()
-            if guild_id in self.song_queues:
-                self.song_queues[guild_id].clear()
-            self.current_song.pop(guild_id, None)
+            self._start_inactivity_timer(guild_id, voice_client)
 
     def _get_service_emoji(self, service_name: str) -> str:
         """Get emoji for service type."""
@@ -286,6 +472,10 @@ class MusicCog(commands.Cog):
         """Play music from various sources (excluding radio)."""
         # Verificar canal correto ANTES do defer
         if not await self._check_musa_channel(interaction):
+            return
+            
+        # Verificar requisitos de canal de voz
+        if not await self._check_voice_requirements(interaction):
             return
             
         try:
@@ -434,12 +624,10 @@ class MusicCog(commands.Cog):
         if not await self._check_musa_channel(interaction):
             return
             
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except discord.HTTPException:
-            # Interaction already acknowledged
-            pass
+        # Verificar requisitos de voz ANTES do defer
+        if not await self._check_voice_requirements(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -476,16 +664,14 @@ class MusicCog(commands.Cog):
 
     @app_commands.command(name="resume", description="Resume the currently paused song.")
     async def resume(self, interaction: discord.Interaction):
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except discord.HTTPException:
-            # Interaction already acknowledged
-            pass
-            
         # Verificar canal correto
         if not await self._check_musa_channel(interaction):
             return
+            
+        # Verificar requisitos de voz
+        if not await self._check_voice_requirements(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -526,6 +712,10 @@ class MusicCog(commands.Cog):
         if not await self._check_musa_channel(interaction):
             return
             
+        # Verificar requisitos de voz ANTES do defer
+        if not await self._check_voice_requirements(interaction):
+            return
+            
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -561,6 +751,12 @@ class MusicCog(commands.Cog):
         if gid in self.song_queues:
             self.song_queues[gid].clear()
         log_event("queue_cleared", guild_id=gid)
+        
+        # Cancelar timer de inatividade se existir
+        self._cancel_inactivity_timer(gid)
+        
+        # Cancelar timer de canal vazio se existir
+        self._cancel_empty_channel_timer(gid)
 
         if vc.is_playing() or vc.is_paused():
             log_event("stopping_playback", guild_id=gid)
@@ -784,6 +980,10 @@ class MusicCog(commands.Cog):
         """Play radio stations by genre."""
         # Verificar canal correto ANTES do defer
         if not await self._check_musa_channel(interaction):
+            return
+            
+        # Verificar requisitos de canal de voz
+        if not await self._check_voice_requirements(interaction):
             return
             
         try:
