@@ -74,7 +74,17 @@ export class YouTubeService extends BaseMusicService {
               query
             });
 
-            ytDlpArgs.push('--cookies', cookiePath);
+            // Create a temporary copy of cookies to avoid permission issues
+            const tempCookiesPath = `/tmp/yt-dlp-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
+            fs.writeFileSync(tempCookiesPath, cookieContent);
+            
+            logEvent('youtube_temp_cookies_created', {
+              originalPath: cookiePath,
+              tempPath: tempCookiesPath,
+              query
+            });
+
+            ytDlpArgs.push('--cookies', tempCookiesPath);
           } else {
             logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
               cookiePath,
@@ -200,9 +210,15 @@ export class YouTubeService extends BaseMusicService {
           
           try {
             if (fs.existsSync(cookiePath)) {
-              ytDlpArgs.push('--cookies', cookiePath);
+              // Create a temporary copy of cookies to avoid permission issues
+              const cookieContent = fs.readFileSync(cookiePath, 'utf8');
+              const tempCookiesPath = `/tmp/yt-dlp-stream-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
+              fs.writeFileSync(tempCookiesPath, cookieContent);
+              
+              ytDlpArgs.push('--cookies', tempCookiesPath);
               logEvent('youtube_stream_cookies_used', {
-                cookiePath,
+                originalPath: cookiePath,
+                tempPath: tempCookiesPath,
                 title: source.title,
                 url: source.url
               });
