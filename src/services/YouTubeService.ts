@@ -45,7 +45,8 @@ export class YouTubeService extends BaseMusicService {
       const args = [
         '--dump-json',
         '--no-warnings',
-        '--skip-download'
+        '--skip-download',
+        '--no-write-cookies'  // Prevent yt-dlp from trying to save cookies
       ];
 
       // Add cookies if configured
@@ -190,7 +191,8 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--get-url',
           '--format', 'bestaudio[ext=m4a]/bestaudio/best',
-          '--no-playlist'
+          '--no-playlist',
+          '--no-write-cookies'  // Prevent yt-dlp from trying to save cookies
         ];
 
         // Add cookies if configured
