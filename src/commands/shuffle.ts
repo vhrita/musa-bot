@@ -140,7 +140,10 @@ export default {
       'Embaralhei as frequências! Agora temos uma sinfonia do acaso! 🎵'
     ];
 
+    if (phrases.length === 0) {
+      return 'As músicas foram embaralhadas!';
+    }
     const randomIndex = Math.floor(Math.random() * phrases.length);
-    return phrases[randomIndex] ?? 'As músicas foram embaralhadas!';
+    return phrases[randomIndex];
   },
 };
