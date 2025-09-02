@@ -41,13 +41,12 @@ export class YouTubeService extends BaseMusicService {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
       
-      // Build yt-dlp arguments
-      const args = [
-        '--dump-json',
-        '--no-warnings',
-        '--skip-download',
-        '--no-write-cookies'  // Prevent yt-dlp from trying to save cookies
-      ];
+              // Use yt-dlp to search for videos
+        const ytDlpArgs = [
+          '--dump-json',
+          '--no-warnings',
+          '--skip-download'
+        ];
 
       // Add cookies if configured
       if (process.env.YTDLP_COOKIES) {
@@ -75,7 +74,7 @@ export class YouTubeService extends BaseMusicService {
               query
             });
 
-            args.push('--cookies', cookiePath);
+            ytDlpArgs.push('--cookies', cookiePath);
           } else {
             logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
               cookiePath,
@@ -96,15 +95,15 @@ export class YouTubeService extends BaseMusicService {
       }
 
       // Add the search query
-      args.push(searchQuery);
+      ytDlpArgs.push(searchQuery);
       
       logEvent('youtube_ytdlp_command', {
         command: 'yt-dlp',
-        args: args.join(' '),
+        args: ytDlpArgs.join(' '),
         query
       });
       
-      const ytDlp = spawn('yt-dlp', args);
+      const ytDlp = spawn('yt-dlp', ytDlpArgs);
 
       let output = '';
       let errorOutput = '';
@@ -191,8 +190,7 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--get-url',
           '--format', 'bestaudio[ext=m4a]/bestaudio/best',
-          '--no-playlist',
-          '--no-write-cookies'  // Prevent yt-dlp from trying to save cookies
+          '--no-playlist'
         ];
 
         // Add cookies if configured
