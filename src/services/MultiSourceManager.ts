@@ -161,12 +161,22 @@ export class MultiSourceManager {
     // Interleave results from different services
     const maxResultsPerService = Math.max(...Object.values(resultsByService).map(arr => arr.length));
     
-    for (let i = 0; i < maxResultsPerService; i++) {
+    // Track per-service indices
+    const serviceIndices: Record<ServiceType, number> = {};
+    for (const service of sortedServices) {
+      serviceIndices[service] = 0;
+    }
+
+    let added = true;
+    while (added) {
+      added = false;
       for (const service of sortedServices) {
         const serviceResults = resultsByService[service];
-        const result = serviceResults?.[i];
-        if (result) {
-          diversifiedResults.push(result);
+        const idx = serviceIndices[service];
+        if (serviceResults && idx < serviceResults.length) {
+          diversifiedResults.push(serviceResults[idx]);
+          serviceIndices[service]++;
+          added = true;
         }
       }
     }
