@@ -45,7 +45,8 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--dump-json',
           '--no-warnings',
-          '--skip-download'
+          '--skip-download',
+          '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
         ];
 
       // Add cookies if configured
@@ -85,6 +86,10 @@ export class YouTubeService extends BaseMusicService {
             });
 
             ytDlpArgs.push('--cookies', tempCookiesPath);
+            
+            // Add additional flags for better YouTube compatibility
+            ytDlpArgs.push('--extractor-args', 'youtube:player_client=android,web');
+            ytDlpArgs.push('--no-check-certificate');
           } else {
             logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
               cookiePath,
@@ -200,7 +205,8 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--get-url',
           '--format', 'bestaudio[ext=m4a]/bestaudio/best',
-          '--no-playlist'
+          '--no-playlist',
+          '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
         ];
 
         // Add cookies if configured
@@ -216,6 +222,11 @@ export class YouTubeService extends BaseMusicService {
               fs.writeFileSync(tempCookiesPath, cookieContent);
               
               ytDlpArgs.push('--cookies', tempCookiesPath);
+              
+              // Add additional flags for better YouTube compatibility
+              ytDlpArgs.push('--extractor-args', 'youtube:player_client=android,web');
+              ytDlpArgs.push('--no-check-certificate');
+              
               logEvent('youtube_stream_cookies_used', {
                 originalPath: cookiePath,
                 tempPath: tempCookiesPath,
