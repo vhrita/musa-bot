@@ -38,7 +38,7 @@ export interface BotConfig {
   token: string;
   clientId: string;
   prefix: string;
-  musaChannelId: string;
+  musaChannelId: string | undefined;
   services: {
     youtube: ServiceConfig;
     internetArchive: ServiceConfig;
