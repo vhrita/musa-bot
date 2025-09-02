@@ -180,8 +180,10 @@ export const MusaPhrases = {
   ]
 } as const;
 
-export const getRandomPhrase = (category: keyof typeof MusaPhrases): string => {
   const phrases = MusaPhrases[category];
+  if (!phrases || phrases.length === 0) {
+    return "🎵 ...";
+  }
   const randomIndex = Math.floor(Math.random() * phrases.length);
   return phrases[randomIndex] || phrases[0];
 };
