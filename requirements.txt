@@ -1,6 +1,0 @@
-discord.py
-yt-dlp
-PyNaCl
-aiohttp
-requests
-beautifulsoup4
