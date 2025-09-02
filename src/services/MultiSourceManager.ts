@@ -3,6 +3,7 @@ import { BaseMusicService } from './BaseMusicService';
 import { RadioService } from './RadioService';
 import { InternetArchiveService } from './InternetArchiveService';
 import { YouTubeService } from './YouTubeService';
+import { RaspberryYouTubeService } from './RaspberryYouTubeService';
 import { botConfig } from '../config';
 import { logEvent, logError, logWarning } from '../utils/logger';
 
@@ -16,7 +17,7 @@ export class MultiSourceManager {
 
   private initializeServices(): void {
     // Initialize all services based on config
-    const services = [
+    const services: BaseMusicService[] = [
       new RadioService(
         botConfig.services.radio.priority,
         botConfig.services.radio.enabled
@@ -24,12 +25,32 @@ export class MultiSourceManager {
       new InternetArchiveService(
         botConfig.services.internetArchive.priority,
         botConfig.services.internetArchive.enabled
-      ),
-      new YouTubeService(
+      )
+    ];
+
+    // Choose YouTube service based on environment
+    if (process.env.RASPBERRY_RESOLVER_URL) {
+      // Use Raspberry Pi resolver if available
+      services.push(new RaspberryYouTubeService(
         botConfig.services.youtube.priority,
         botConfig.services.youtube.enabled
-      ),
-    ];
+      ));
+      logEvent('raspberry_youtube_service_initialized', {
+        resolverUrl: process.env.RASPBERRY_RESOLVER_URL,
+        priority: botConfig.services.youtube.priority,
+        enabled: botConfig.services.youtube.enabled
+      });
+    } else {
+      // Fallback to direct YouTube service
+      services.push(new YouTubeService(
+        botConfig.services.youtube.priority,
+        botConfig.services.youtube.enabled
+      ));
+      logEvent('direct_youtube_service_initialized', {
+        priority: botConfig.services.youtube.priority,
+        enabled: botConfig.services.youtube.enabled
+      });
+    }
 
     this.services.push(...services);
 

@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # YouTube Resolver (simula o Raspberry Pi)
+  youtube-resolver:
+    build: 
+      context: ./raspberry-resolver
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      # Compartilhar cookies do Chrome local (se existir)
+      - ~/.config/google-chrome:/home/node/.config/google-chrome:ro
+      - ./raspberry-resolver/logs:/app/logs
+    environment:
+      - NODE_ENV=development
+    networks:
+      - musa-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Discord Bot (usando o resolver local)
+  musa-bot:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      youtube-resolver:
+        condition: service_healthy
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - RASPBERRY_RESOLVER_URL=http://youtube-resolver:3001
+      - NODE_ENV=development
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - musa-network
+    restart: unless-stopped
+
+networks:
+  musa-network:
+    driver: bridge
