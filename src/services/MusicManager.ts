@@ -402,9 +402,7 @@ export class MusicManager {
       const j = Math.floor(Math.random() * (i + 1));
       const itemI = guildData.queue[i];
       const itemJ = guildData.queue[j];
-      if (itemI && itemJ) {
-        [guildData.queue[i], guildData.queue[j]] = [itemJ, itemI];
-      }
+      [guildData.queue[i], guildData.queue[j]] = [itemJ, itemI];
     }
     
     logEvent('queue_shuffled', { guildId, queueLength: guildData.queue.length });
