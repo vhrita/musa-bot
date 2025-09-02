@@ -1,0 +1,36 @@
+# Debug Dockerfile para desenvolvimento
+FROM node:18-alpine
+
+# Install system dependencies including ffmpeg and yt-dlp for audio processing
+# Note: yt-dlp automatically installs python3 as dependency
+RUN apk add --no-cache \
+    ffmpeg \
+    yt-dlp \
+    && rm -rf /var/cache/apk/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files and source code
+COPY package*.json ./
+COPY tsconfig.json ./
+COPY src/ ./src/
+
+# Install all dependencies and build
+RUN npm ci && \
+    npm run build
+
+# Create non-root user and setup directories
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S musa -u 1001 -G nodejs && \
+    mkdir -p logs && \
+    chown -R musa:nodejs /app
+
+# Switch to non-root user
+USER musa
+
+# Expose debug port
+EXPOSE 9229
+
+# Start with debugging enabled
+CMD ["node", "--inspect=0.0.0.0:9229", "dist/index.js"]
