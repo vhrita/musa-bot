@@ -1,0 +1,29 @@
+# Docker Compose example for VPS deployment with persistent cookies
+version: '3.8'
+
+services:
+  musa-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - GUILD_ID=${GUILD_ID}
+      - ENABLE_YOUTUBE=true
+      - ENABLE_INTERNET_ARCHIVE=true
+      - ENABLE_RADIO=true
+      - YOUTUBE_PRIORITY=1
+      - RADIO_PRIORITY=2
+      - INTERNET_ARCHIVE_PRIORITY=3
+      - LOG_LEVEL=INFO
+      - YTDLP_COOKIES=/app/cookies/cookies.txt
+    volumes:
+      # Mount persistent cookies directory from VPS
+      - /app/cookies:/app/cookies:ro
+      # Mount logs directory for persistence
+      - ./logs:/app/logs
+    networks:
+      - captain-overlay-network
+
+networks:
+  captain-overlay-network:
+    external: true

@@ -15,7 +15,6 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 COPY src/ ./src/
-COPY cookies/ ./cookies/
 
 # Install all dependencies and build
 RUN npm ci && \
