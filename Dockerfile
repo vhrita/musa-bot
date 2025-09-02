@@ -23,39 +23,28 @@ COPY src/ ./src/
 # Build the application
 RUN npm run build
 
-# Production stage
+# --- production stage ---
 FROM node:18-alpine AS production
 
-# Install runtime dependencies and create user
-# Note: yt-dlp automatically installs python3 as dependency
-RUN apk add --no-cache \
-    ffmpeg \
-    yt-dlp \
-    && rm -rf /var/cache/apk/* && \
-    addgroup -g 1001 -S nodejs && \
-    adduser -S musa -u 1001
+# deps de runtime
+RUN apk add --no-cache ffmpeg yt-dlp su-exec
 
-# Set working directory
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install only production dependencies
 RUN npm ci --only=production && npm cache clean --force
-
-# Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Create logs and cookies directories with proper permissions
-RUN mkdir -p logs cookies && \
-    chown -R musa:nodejs /app
+# (opcional) manter logs em /app
+RUN mkdir -p /app/logs
 
-# Switch to non-root user
-USER musa
+# crie o usuário/grupo
+RUN addgroup -g 1001 -S nodejs && adduser -S musa -u 1001
 
-# Expose port (optional, for health checks)
+# ENTRYPOINT que acerta permissões do volume e troca de usuário
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# não fixe USER aqui; o entrypoint roda como root e usa su-exec para virar "musa"
 EXPOSE 3000
-
-# Start the application
-CMD ["npm", "start"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["node", "dist/index.js"]
