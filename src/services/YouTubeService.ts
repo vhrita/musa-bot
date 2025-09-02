@@ -41,12 +41,22 @@ export class YouTubeService extends BaseMusicService {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
       
-      const ytDlp = spawn('yt-dlp', [
+      // Build yt-dlp arguments
+      const args = [
         '--dump-json',
         '--no-warnings',
-        '--skip-download',
-        searchQuery
-      ]);
+        '--skip-download'
+      ];
+
+      // Add cookies if configured
+      if (process.env.YTDLP_COOKIES) {
+        args.push('--cookies', process.env.YTDLP_COOKIES);
+      }
+
+      // Add the search query
+      args.push(searchQuery);
+      
+      const ytDlp = spawn('yt-dlp', args);
 
       let output = '';
       let errorOutput = '';
@@ -133,15 +143,22 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--get-url',
           '--format', 'bestaudio[ext=m4a]/bestaudio/best',
-          '--no-playlist',
-          source.url
+          '--no-playlist'
         ];
+
+        // Add cookies if configured
+        if (process.env.YTDLP_COOKIES) {
+          ytDlpArgs.push('--cookies', process.env.YTDLP_COOKIES);
+        }
 
         // Add proxy if configured
         const proxy = process.env.YTDLP_PROXY;
         if (proxy) {
           ytDlpArgs.push('--proxy', proxy);
         }
+
+        // Add the URL
+        ytDlpArgs.push(source.url);
 
         const ytDlp = spawn('yt-dlp', ytDlpArgs);
 
