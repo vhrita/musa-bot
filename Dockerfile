@@ -47,6 +47,9 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
+# Copy cookies if they exist (optional)
+COPY cookies/ ./cookies/
+
 # Create logs directory and set permissions
 RUN mkdir -p logs && \
     chown -R musa:nodejs /app
