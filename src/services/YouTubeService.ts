@@ -50,11 +50,58 @@ export class YouTubeService extends BaseMusicService {
 
       // Add cookies if configured
       if (process.env.YTDLP_COOKIES) {
-        args.push('--cookies', process.env.YTDLP_COOKIES);
+        const fs = require('fs');
+        const cookiePath = process.env.YTDLP_COOKIES;
+        
+        logEvent('youtube_cookies_check', {
+          cookiePath,
+          query
+        });
+
+        try {
+          if (fs.existsSync(cookiePath)) {
+            const stats = fs.statSync(cookiePath);
+            const cookieContent = fs.readFileSync(cookiePath, 'utf8');
+            const cookieLines = cookieContent.split('\n').filter((line: string) => 
+              line.trim() && !line.startsWith('#')
+            ).length;
+
+            logEvent('youtube_cookies_loaded', {
+              cookiePath,
+              fileSize: stats.size,
+              cookieLines,
+              lastModified: stats.mtime,
+              query
+            });
+
+            args.push('--cookies', cookiePath);
+          } else {
+            logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
+              cookiePath,
+              query
+            });
+          }
+        } catch (error) {
+          logError('Error reading YouTube cookies file', error as Error, {
+            cookiePath,
+            query
+          });
+        }
+      } else {
+        logEvent('youtube_cookies_not_configured', {
+          query,
+          message: 'YTDLP_COOKIES environment variable not set'
+        });
       }
 
       // Add the search query
       args.push(searchQuery);
+      
+      logEvent('youtube_ytdlp_command', {
+        command: 'yt-dlp',
+        args: args.join(' '),
+        query
+      });
       
       const ytDlp = spawn('yt-dlp', args);
 
@@ -148,7 +195,31 @@ export class YouTubeService extends BaseMusicService {
 
         // Add cookies if configured
         if (process.env.YTDLP_COOKIES) {
-          ytDlpArgs.push('--cookies', process.env.YTDLP_COOKIES);
+          const fs = require('fs');
+          const cookiePath = process.env.YTDLP_COOKIES;
+          
+          try {
+            if (fs.existsSync(cookiePath)) {
+              ytDlpArgs.push('--cookies', cookiePath);
+              logEvent('youtube_stream_cookies_used', {
+                cookiePath,
+                title: source.title,
+                url: source.url
+              });
+            } else {
+              logEvent('youtube_stream_cookies_missing', {
+                cookiePath,
+                title: source.title,
+                url: source.url
+              });
+            }
+          } catch (error) {
+            logError('Error checking cookies for stream URL', error as Error, {
+              cookiePath,
+              title: source.title,
+              url: source.url
+            });
+          }
         }
 
         // Add proxy if configured
