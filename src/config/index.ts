@@ -35,8 +35,8 @@ export const botConfig: BotConfig = {
   music: {
     searchTimeout: parseInt(process.env.SEARCH_TIMEOUT_SECONDS || '10') * 1000,
     maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '100'),
-    inactivityTimeout: parseInt(process.env.INACTIVITY_TIMEOUT || '60') * 1000,
-    emptyChannelTimeout: parseInt(process.env.EMPTY_CHANNEL_TIMEOUT || '30') * 1000,
+    inactivityTimeout: parseInt(process.env.INACTIVITY_TIMEOUT || '60') * 1000,        // 1 minute default
+    emptyChannelTimeout: parseInt(process.env.EMPTY_CHANNEL_TIMEOUT || '120') * 1000,  // 2 minutes default
   },
 };
 

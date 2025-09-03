@@ -97,9 +97,9 @@ const loadEvents = async () => {
             const eventData = event.default || event;
             
             if (eventData.once) {
-                client.once(eventData.name, (...args) => eventData.execute(...args));
+                client.once(eventData.name, (...args) => eventData.execute(...args, musicManager));
             } else {
-                client.on(eventData.name, (...args) => eventData.execute(...args));
+                client.on(eventData.name, (...args) => eventData.execute(...args, musicManager));
             }
             
             eventNames.push(eventData.name);
