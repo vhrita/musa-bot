@@ -93,40 +93,32 @@ export class MusicManager {
   }
 
   private cleanup(guildId: string): void {
-    // Clean up audio player
+    // Cancel all timers
+    this.cancelInactivityTimer(guildId);
+    this.cancelEmptyChannelTimer(guildId);
+    
+    // Cleanup audio player
     const player = this.audioPlayers.get(guildId);
     if (player) {
-      player.stop();
+      player.stop(true);
       this.audioPlayers.delete(guildId);
     }
 
-    // Clean up subscription
+    // Cleanup subscription
     const subscription = this.playerSubscriptions.get(guildId);
     if (subscription) {
       subscription.unsubscribe();
       this.playerSubscriptions.delete(guildId);
     }
 
-    // Clean up guild data timers
+    // Reset guild data
     const guildData = this.guildData.get(guildId);
     if (guildData) {
-      if (guildData.inactivityTimer) {
-        clearTimeout(guildData.inactivityTimer);
-      }
-      if (guildData.emptyChannelTimer) {
-        clearTimeout(guildData.emptyChannelTimer);
-      }
+      guildData.currentSong = null;
+      guildData.queue = [];
+      guildData.isPlaying = false;
+      guildData.isPaused = false;
     }
-
-    // Reset guild data
-    this.guildData.set(guildId, {
-      queue: [],
-      currentSong: null,
-      volume: 50,
-      isPlaying: false,
-      isPaused: false,
-      loopMode: 'off',
-    });
 
     logEvent('music_manager_cleanup', { guildId });
   }
@@ -456,6 +448,41 @@ export class MusicManager {
       delete guildData.inactivityTimer;
       logEvent('inactivity_timer_cancelled', { guildId });
     }
+  }
+
+  private startEmptyChannelTimer(guildId: string): void {
+    this.cancelEmptyChannelTimer(guildId);
+    
+    const guildData = this.getGuildData(guildId);
+    guildData.emptyChannelTimer = setTimeout(() => {
+      logEvent('empty_channel_timeout', { guildId });
+      void this.leaveVoiceChannel(guildId);
+    }, botConfig.music.emptyChannelTimeout);
+
+    logEvent('empty_channel_timer_started', { 
+      guildId, 
+      timeout: botConfig.music.emptyChannelTimeout 
+    });
+  }
+
+  private cancelEmptyChannelTimer(guildId: string): void {
+    const guildData = this.guildData.get(guildId);
+    if (guildData?.emptyChannelTimer) {
+      clearTimeout(guildData.emptyChannelTimer);
+      delete guildData.emptyChannelTimer;
+      logEvent('empty_channel_timer_cancelled', { guildId });
+    }
+  }
+
+  // Public method to handle voice state updates from the bot
+  handleVoiceChannelEmpty(guildId: string): void {
+    logEvent('voice_channel_empty', { guildId });
+    this.startEmptyChannelTimer(guildId);
+  }
+
+  handleVoiceChannelOccupied(guildId: string): void {
+    logEvent('voice_channel_not_empty', { guildId });
+    this.cancelEmptyChannelTimer(guildId);
   }
 
   // Public getters

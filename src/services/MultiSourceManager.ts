@@ -3,7 +3,7 @@ import { BaseMusicService } from './BaseMusicService';
 import { RadioService } from './RadioService';
 import { InternetArchiveService } from './InternetArchiveService';
 import { YouTubeService } from './YouTubeService';
-import { RaspberryYouTubeService } from './RaspberryYouTubeService';
+import { ResolverYouTubeService } from './ResolverYouTubeService';
 import { botConfig } from '../config';
 import { logEvent, logError, logWarning } from '../utils/logger';
 
@@ -29,14 +29,14 @@ export class MultiSourceManager {
     ];
 
     // Choose YouTube service based on environment
-    if (process.env.RASPBERRY_RESOLVER_URL) {
-      // Use Raspberry Pi resolver if available
-      services.push(new RaspberryYouTubeService(
+    if (process.env.RESOLVER_URL) {
+      // Use resolver if available
+      services.push(new ResolverYouTubeService(
         botConfig.services.youtube.priority,
         botConfig.services.youtube.enabled
       ));
-      logEvent('raspberry_youtube_service_initialized', {
-        resolverUrl: process.env.RASPBERRY_RESOLVER_URL,
+      logEvent('resolver_youtube_service_initialized', {
+        resolverUrl: process.env.RESOLVER_URL,
         priority: botConfig.services.youtube.priority,
         enabled: botConfig.services.youtube.enabled
       });
