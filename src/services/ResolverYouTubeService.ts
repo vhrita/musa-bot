@@ -4,12 +4,12 @@ import { logEvent, logError } from '../utils/logger';
 import axios from 'axios';
 import { spawn } from 'child_process';
 
-export class RaspberryYouTubeService extends BaseMusicService {
+export class ResolverYouTubeService extends BaseMusicService {
   private readonly resolverUrl: string;
 
-  constructor(priority: number, enabled: boolean) {
-    super('youtube' as ServiceType, priority, enabled);
-    this.resolverUrl = process.env.RASPBERRY_RESOLVER_URL || 'http://localhost:3001';
+  constructor(priority: number = 1, enabled: boolean = true) {
+    super('youtube', priority, enabled);
+    this.resolverUrl = process.env.RESOLVER_URL || 'http://localhost:3001';
   }
 
   async search(query: string, maxResults: number): Promise<MusicSource[]> {
@@ -23,7 +23,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
       if (isHealthy) {
         return await this.searchWithResolver(query, maxResults);
       } else {
-        logEvent('raspberry_resolver_unhealthy_fallback', {
+        logEvent('resolver_unhealthy_fallback', {
           query,
           maxResults,
           resolverUrl: this.resolverUrl
@@ -31,7 +31,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
         return await this.searchWithDirectYtDlp(query, maxResults);
       }
     } catch (error) {
-      logError('Raspberry resolver failed, using direct yt-dlp', error as Error, {
+      logError('Resolver failed, using direct yt-dlp', error as Error, {
         query,
         maxResults,
         resolverUrl: this.resolverUrl
@@ -41,7 +41,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
   }
 
   private async searchWithResolver(query: string, maxResults: number): Promise<MusicSource[]> {
-    logEvent('raspberry_youtube_search_started', {
+    logEvent('resolver_youtube_search_started', {
       query,
       maxResults,
       resolverUrl: this.resolverUrl,
@@ -57,7 +57,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
 
     const results = response.data.results || [];
 
-    logEvent('raspberry_youtube_search_completed', {
+    logEvent('resolver_youtube_search_completed', {
       query,
       resultsCount: results.length,
       method: 'resolver'
@@ -70,7 +70,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
       
-      logEvent('raspberry_youtube_search_started', {
+      logEvent('resolver_youtube_search_started', {
         query,
         maxResults,
         method: 'direct_ytdlp'
@@ -94,7 +94,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
         }
       }
 
-      logEvent('raspberry_youtube_ytdlp_command', {
+      logEvent('resolver_youtube_ytdlp_command', {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
         query,
@@ -154,7 +154,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
           }
         }
 
-        logEvent('raspberry_youtube_search_completed', {
+        logEvent('resolver_youtube_search_completed', {
           query,
           resultsCount: results.length,
           method: 'direct_ytdlp'
@@ -184,14 +184,14 @@ export class RaspberryYouTubeService extends BaseMusicService {
       if (isHealthy) {
         return await this.getStreamUrlWithResolver(url);
       } else {
-        logEvent('raspberry_resolver_unhealthy_fallback_stream', {
+        logEvent('resolver_unhealthy_fallback_stream', {
           url,
           resolverUrl: this.resolverUrl
         });
         return await this.getStreamUrlWithDirectYtDlp(url);
       }
     } catch (error) {
-      logError('Raspberry resolver stream failed, using direct yt-dlp', error as Error, {
+      logError('Resolver stream failed, using direct yt-dlp', error as Error, {
         url,
         resolverUrl: this.resolverUrl
       });
@@ -200,7 +200,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
   }
 
   private async getStreamUrlWithResolver(url: string): Promise<string | null> {
-    logEvent('raspberry_youtube_stream_started', {
+    logEvent('resolver_youtube_stream_started', {
       url,
       resolverUrl: this.resolverUrl,
       method: 'resolver'
@@ -214,7 +214,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
 
     const streamUrl = response.data.streamUrl;
 
-    logEvent('raspberry_youtube_stream_completed', {
+    logEvent('resolver_youtube_stream_completed', {
       url,
       hasStreamUrl: !!streamUrl,
       method: 'resolver'
@@ -225,7 +225,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
 
   private async getStreamUrlWithDirectYtDlp(url: string): Promise<string | null> {
     return new Promise((resolve) => {
-      logEvent('raspberry_youtube_stream_started', {
+      logEvent('resolver_youtube_stream_started', {
         url,
         method: 'direct_ytdlp'
       });
@@ -248,7 +248,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
         }
       }
 
-      logEvent('raspberry_youtube_ytdlp_stream_command', {
+      logEvent('resolver_youtube_ytdlp_stream_command', {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
         url,
@@ -281,7 +281,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
 
         const streamUrl = output.trim();
         
-        logEvent('raspberry_youtube_stream_completed', {
+        logEvent('resolver_youtube_stream_completed', {
           url,
           hasStreamUrl: !!streamUrl,
           method: 'direct_ytdlp'
@@ -315,7 +315,7 @@ export class RaspberryYouTubeService extends BaseMusicService {
       
       const isHealthy = response.status === 200 && response.data.status === 'ok';
       
-      logEvent('raspberry_resolver_health_check', {
+      logEvent('resolver_health_check', {
         resolverUrl: this.resolverUrl,
         healthy: isHealthy,
         status: response.data.status

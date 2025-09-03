@@ -1,22 +1,22 @@
-# 🍓 YouTube Resolver for Raspberry Pi
+# � YouTube Resolver Server
 
-Este é um resolver de YouTube que roda no seu Raspberry Pi usando cookies do navegador local.
+Este é um resolver de YouTube que pode rodar em qualquer máquina usando cookies do navegador local.
 
 ## 🎯 **Como Funciona:**
 
-1. **Raspberry Pi** roda um servidor Express.js
-2. **Bot na VPS** envia requisições para o Raspberry
-3. **Raspberry resolve** URLs usando `yt-dlp --cookies-from-browser`
+1. **Servidor remoto** roda um servidor Express.js
+2. **Bot na VPS** envia requisições para o servidor resolver
+3. **Servidor resolve** URLs usando `yt-dlp --cookies-from-browser`
 4. **Bot reproduz** os streams diretamente
 
-## 🚀 **Setup no Raspberry Pi:**
+## 🚀 **Setup do Servidor Resolver:**
 
-### **1. Instalar no Raspberry:**
+### **1. Instalar no servidor:**
 
 ```bash
 # 1. Clone o projeto
 git clone https://github.com/vhrita/musa-bot.git
-cd musa-bot/raspberry-resolver
+cd musa-bot/youtube-resolver
 
 # 2. Instalar dependências
 npm install
@@ -38,13 +38,13 @@ chromium-browser --no-sandbox
 
 ```bash
 # Adicionar variável de ambiente no bot
-export RASPBERRY_RESOLVER_URL="http://IP_DO_SEU_RASPBERRY:3001"
+export RESOLVER_URL="http://IP_DO_SEU_SERVIDOR:3001"
 ```
 
 ### **3. Executar:**
 
 ```bash
-# No Raspberry Pi
+# No servidor resolver
 npm start
 
 # Ou com Docker
@@ -103,9 +103,9 @@ docker run -p 3001:3001 youtube-resolver
 
 ## 🔄 **Integração com o Bot:**
 
-O bot vai automaticamente usar o `RaspberryYouTubeService` se:
-- A variável `RASPBERRY_RESOLVER_URL` estiver configurada
-- O health check do Raspberry passar
+O bot vai automaticamente usar o `ResolverYouTubeService` se:
+- A variável `RESOLVER_URL` estiver configurada
+- O health check do servidor resolver passar
 
 ## 🐛 **Troubleshooting:**
 
@@ -116,22 +116,22 @@ chromium-browser --no-sandbox
 # Ir para youtube.com e fazer login novamente
 ```
 
-### **Raspberry não responde:**
+### **Servidor não responde:**
 ```bash
 # Verificar se está rodando
-curl http://IP_DO_RASPBERRY:3001/health
+curl http://IP_DO_SERVIDOR:3001/health
 
 # Ver logs
 tail -f resolver.log
 ```
 
-### **Bot não encontra Raspberry:**
+### **Bot não encontra servidor resolver:**
 ```bash
 # No bot, verificar variável
-echo $RASPBERRY_RESOLVER_URL
+echo $RESOLVER_URL
 
 # Testar conectividade
-curl $RASPBERRY_RESOLVER_URL/health
+curl $RESOLVER_URL/health
 ```
 
 ## 📱 **Monitoramento:**
@@ -148,7 +148,7 @@ curl http://localhost:3001/health
 
 - Use firewall para expor apenas porta 3001
 - Configure acesso apenas para IP da VPS
-- Mantenha o Raspberry atualizado
+- Mantenha o servidor resolver atualizado
 
 ```bash
 # Configurar iptables (exemplo)
