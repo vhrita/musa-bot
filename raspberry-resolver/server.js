@@ -55,23 +55,26 @@ app.post('/search', async (req, res) => {
 app.post('/stream', async (req, res) => {
   const { url } = req.body;
   
-  if (!url) {
+  // Extract URL from MusicSource object if needed
+  const videoUrl = typeof url === 'string' ? url : url?.url;
+  
+  if (!videoUrl) {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  logger.info('Stream URL request', { url });
+  logger.info('Stream URL request', { url: videoUrl });
 
   try {
-    const streamUrl = await getStreamUrl(url);
+    const streamUrl = await getStreamUrl(videoUrl);
     if (streamUrl) {
-      logger.info('Stream URL resolved', { originalUrl: url, resolved: true });
+      logger.info('Stream URL resolved', { originalUrl: videoUrl, resolved: true });
       res.json({ streamUrl });
     } else {
-      logger.warn('Stream URL not found', { url });
+      logger.warn('Stream URL not found', { url: videoUrl });
       res.status(404).json({ error: 'Stream URL not found' });
     }
   } catch (error) {
-    logger.error('Stream resolution failed', { url, error: error.message });
+    logger.error('Stream resolution failed', { url: videoUrl, error: error.message });
     res.status(500).json({ error: 'Stream resolution failed', message: error.message });
   }
 });
