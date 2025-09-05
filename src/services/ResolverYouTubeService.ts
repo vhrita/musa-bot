@@ -52,7 +52,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       query,
       maxResults
     }, {
-      timeout: 60000 // 60 seconds timeout - yt-dlp can be slow
+      timeout: 60000 // Increased timeout for Raspberry Pi
     });
 
     const results = response.data.results || [];
@@ -76,22 +76,44 @@ export class ResolverYouTubeService extends BaseMusicService {
         method: 'direct_ytdlp'
       });
       
-      // Use yt-dlp directly as fallback
+      // Use optimized yt-dlp flags as fallback (same as resolver)
       const ytDlpArgs = [
         '--dump-json',
-        '--no-warnings',
+        '--default-search', 'ytsearch',
+        '--no-playlist',
+        '--no-check-certificate', 
+        '--geo-bypass',
+        '--flat-playlist',
         '--skip-download',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        '--quiet',
+        '--ignore-errors',
+        '--socket-timeout', '15',
+        '--max-downloads', maxResults.toString(),
         searchQuery
       ];
 
-      // Add cookies if available
+      // Only add cookies if file exists and is readable (avoid permission errors)
       const cookiePath = process.env.YTDLP_COOKIES;
       if (cookiePath) {
         const fs = require('fs');
-        if (fs.existsSync(cookiePath)) {
-          ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
+        try {
+          if (fs.existsSync(cookiePath)) {
+            // Test if file is readable before adding to args
+            fs.accessSync(cookiePath, fs.constants.R_OK);
+            ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
+            logEvent('resolver_ytdlp_cookies_added', { cookiePath, query });
+          } else {
+            logEvent('resolver_ytdlp_cookies_not_found', { cookiePath, query });
+          }
+        } catch (error) {
+          logEvent('resolver_ytdlp_cookies_error', { 
+            cookiePath, 
+            query, 
+            error: (error as Error).message 
+          });
         }
+      } else {
+        logEvent('resolver_ytdlp_no_cookies', { query });
       }
 
       logEvent('resolver_youtube_ytdlp_command', {
@@ -102,9 +124,16 @@ export class ResolverYouTubeService extends BaseMusicService {
       });
       
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
-
       let output = '';
       let errorOutput = '';
+      let isTimedOut = false;
+
+      // Add timeout for direct yt-dlp as well
+      const timeoutId = setTimeout(() => {
+        isTimedOut = true;
+        ytDlp.kill('SIGKILL');
+        logEvent('resolver_ytdlp_timeout', { query, timeout: 30000 });
+      }, 30000);
 
       ytDlp.stdout.on('data', (data) => {
         output += data.toString();
@@ -115,6 +144,14 @@ export class ResolverYouTubeService extends BaseMusicService {
       });
 
       ytDlp.on('close', (code) => {
+        clearTimeout(timeoutId);
+        
+        if (isTimedOut) {
+          logEvent('resolver_ytdlp_timed_out', { query });
+          resolve([]);
+          return;
+        }
+
         if (code !== 0) {
           logError('Direct yt-dlp search failed', new Error(errorOutput), {
             query,

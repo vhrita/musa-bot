@@ -240,18 +240,18 @@ function searchYouTubeQuick(query, maxResults) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
     
-    // Optimized args based on research - can reduce from 11s to 1.6s
+    // Optimized args for maximum speed (re-added --flat-playlist for testing)
     const ytDlpArgs = [
       '--dump-json',
       '--default-search', 'ytsearch',
       '--no-playlist',
       '--no-check-certificate',
       '--geo-bypass',
-      '--flat-playlist',
+      '--flat-playlist',        // Re-added - excellent for speed
       '--skip-download',
       '--quiet',
       '--ignore-errors',
-      '--socket-timeout', '10',
+      '--socket-timeout', '20',  // Increased for Raspberry Pi
       '--max-downloads', maxResults.toString()
     ];
 
@@ -269,12 +269,12 @@ function searchYouTubeQuick(query, maxResults) {
     let errorOutput = '';
     let isTimedOut = false;
 
-    // Shorter timeout for quick mode
+    // Shorter timeout for quick mode - adjusted for Raspberry Pi
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       ytDlp.kill('SIGKILL');
-      logger.warn('yt-dlp quick search timed out', { query, timeout: 15000 });
-    }, 15000);
+      logger.warn('yt-dlp quick search timed out', { query, timeout: 30000 });
+    }, 30000);
 
     ytDlp.stdout.on('data', (data) => {
       output += data.toString();
@@ -288,7 +288,7 @@ function searchYouTubeQuick(query, maxResults) {
       clearTimeout(timeoutId);
       
       if (isTimedOut) {
-        reject(new Error('Quick search timed out after 15 seconds'));
+        reject(new Error('Quick search timed out after 30 seconds'));
         return;
       }
 
@@ -350,7 +350,7 @@ function searchYouTube(query, maxResults) {
       '--geo-bypass',
       '--skip-download',
       '--ignore-errors',
-      '--socket-timeout', '15',
+      '--socket-timeout', '30',  // Increased for Raspberry Pi
       '--playlist-end', maxResults.toString(),
       ...getCookieArgs(),  // Add cookies if available
       searchQuery
@@ -365,12 +365,12 @@ function searchYouTube(query, maxResults) {
     let errorOutput = '';
     let isTimedOut = false;
 
-    // Add explicit timeout handling
+    // Add explicit timeout handling - increased for Raspberry Pi
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       ytDlp.kill('SIGKILL');
-      logger.warn('yt-dlp search timed out', { query, timeout: 25000 });
-    }, 25000);
+      logger.warn('yt-dlp search timed out', { query, timeout: 45000 });
+    }, 45000);
 
     ytDlp.stdout.on('data', (data) => {
       output += data.toString();
@@ -384,7 +384,7 @@ function searchYouTube(query, maxResults) {
       clearTimeout(timeoutId);
       
       if (isTimedOut) {
-        reject(new Error('Search timed out after 25 seconds'));
+        reject(new Error('Search timed out after 45 seconds'));
         return;
       }
 
