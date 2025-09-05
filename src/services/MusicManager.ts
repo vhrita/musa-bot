@@ -26,7 +26,7 @@ export class MusicManager {
   // Stream URL pre-caching system
   private readonly streamCache = new Map<string, { url: string; timestamp: number }>();
   private readonly streamCacheTTL = 10 * 60 * 1000; // 10 minutes
-  private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded
+  // private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded (temporarily disabled)
   private readonly activeStreams = new Set<string>(); // Track active streaming URLs
 
   constructor() {
@@ -627,7 +627,8 @@ export class MusicManager {
     logEvent('stream_cache_set', { songUrl, streamUrl });
   }
 
-  // Preload next songs in queue
+  // Preload next songs in queue (temporarily disabled)
+  /*
   private async preloadNextSongs(guildId: string): Promise<void> {
     const guildData = this.getGuildData(guildId);
     
@@ -661,7 +662,10 @@ export class MusicManager {
       }
     }
   }
+  */
 
+  // Preload individual stream URL (temporarily disabled)
+  /*
   private async preloadStreamUrl(song: QueuedSong): Promise<void> {
     if (this.preloadingUrls.has(song.url)) {
       return; // Already preloading
@@ -707,6 +711,7 @@ export class MusicManager {
       this.preloadingUrls.delete(song.url);
     }
   }
+  */
 
   // Enhanced getStreamUrl with caching
   private async getStreamUrlWithCache(song: QueuedSong): Promise<string> {
