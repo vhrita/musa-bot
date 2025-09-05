@@ -12,6 +12,17 @@ const searchCache = new Map();
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 const MAX_CACHE_SIZE = 100; // Maximum cache entries
 
+// Rate limiting and circuit breaker
+const activeCalls = new Map(); // Track active calls by URL
+const MAX_CONCURRENT_CALLS = 3; // Max concurrent calls per URL
+const CIRCUIT_BREAKER = {
+  failures: 0,
+  lastFailure: 0,
+  isOpen: false,
+  threshold: 5, // Open circuit after 5 failures
+  timeout: 30000 // Reset after 30 seconds
+};
+
 // Configure logging
 const logger = winston.createLogger({
   level: 'info',
@@ -47,6 +58,56 @@ function getCachedResult(query, maxResults) {
   }
   
   return null;
+}
+
+// Circuit breaker functions
+function isCircuitOpen() {
+  if (CIRCUIT_BREAKER.isOpen) {
+    const timeSinceLastFailure = Date.now() - CIRCUIT_BREAKER.lastFailure;
+    if (timeSinceLastFailure > CIRCUIT_BREAKER.timeout) {
+      // Reset circuit breaker
+      CIRCUIT_BREAKER.isOpen = false;
+      CIRCUIT_BREAKER.failures = 0;
+      logger.info('Circuit breaker reset');
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+function recordFailure() {
+  CIRCUIT_BREAKER.failures++;
+  CIRCUIT_BREAKER.lastFailure = Date.now();
+  
+  if (CIRCUIT_BREAKER.failures >= CIRCUIT_BREAKER.threshold) {
+    CIRCUIT_BREAKER.isOpen = true;
+    logger.warn('Circuit breaker opened', { failures: CIRCUIT_BREAKER.failures });
+  }
+}
+
+function recordSuccess() {
+  CIRCUIT_BREAKER.failures = Math.max(0, CIRCUIT_BREAKER.failures - 1);
+}
+
+// Rate limiting for concurrent calls
+function canMakeCall(url) {
+  const activeCount = activeCalls.get(url) || 0;
+  return activeCount < MAX_CONCURRENT_CALLS;
+}
+
+function recordActiveCall(url) {
+  const current = activeCalls.get(url) || 0;
+  activeCalls.set(url, current + 1);
+}
+
+function recordCallComplete(url) {
+  const current = activeCalls.get(url) || 0;
+  if (current <= 1) {
+    activeCalls.delete(url);
+  } else {
+    activeCalls.set(url, current - 1);
+  }
 }
 
 function setCachedResult(query, maxResults, results) {
@@ -254,12 +315,28 @@ app.all('/proxy-stream', async (req, res) => {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
 
+  const decodedUrl = decodeURIComponent(url);
+
+  // Check circuit breaker
+  if (isCircuitOpen()) {
+    logger.warn('Circuit breaker open, rejecting request', { url: decodedUrl });
+    return res.status(503).json({ error: 'Service temporarily unavailable' });
+  }
+
+  // Check rate limiting
+  if (!canMakeCall(decodedUrl)) {
+    logger.warn('Rate limit exceeded', { url: decodedUrl, activeCalls: activeCalls.get(decodedUrl) });
+    return res.status(429).json({ error: 'Too many concurrent requests for this URL' });
+  }
+
+  recordActiveCall(decodedUrl);
+
   try {
-    const decodedUrl = decodeURIComponent(url);
     logger.info('Proxying stream', { 
       originalUrl: decodedUrl, 
       method: req.method,
-      range: req.headers.range 
+      range: req.headers.range,
+      activeCalls: activeCalls.get(decodedUrl)
     });
     
     // For HEAD requests, just get headers
@@ -318,6 +395,8 @@ app.all('/proxy-stream', async (req, res) => {
     response.data.on('error', (error) => {
       if (!streamEnded) {
         streamEnded = true;
+        recordFailure();
+        recordCallComplete(decodedUrl);
         logger.error('Stream proxy error', { error: error.message, url: decodedUrl });
         if (!res.headersSent) {
           res.status(500).json({ error: 'Stream proxy failed' });
@@ -328,6 +407,8 @@ app.all('/proxy-stream', async (req, res) => {
     response.data.on('end', () => {
       if (!streamEnded) {
         streamEnded = true;
+        recordSuccess();
+        recordCallComplete(decodedUrl);
         logger.info('Stream proxy completed', { url: decodedUrl });
       }
     });
@@ -335,6 +416,7 @@ app.all('/proxy-stream', async (req, res) => {
     response.data.on('close', () => {
       if (!streamEnded) {
         streamEnded = true;
+        recordCallComplete(decodedUrl);
         logger.info('Stream proxy closed', { url: decodedUrl });
       }
     });
@@ -343,6 +425,7 @@ app.all('/proxy-stream', async (req, res) => {
     req.on('close', () => {
       if (!streamEnded) {
         streamEnded = true;
+        recordCallComplete(decodedUrl);
         logger.info('Client disconnected from stream', { url: decodedUrl });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
@@ -353,6 +436,7 @@ app.all('/proxy-stream', async (req, res) => {
     req.on('aborted', () => {
       if (!streamEnded) {
         streamEnded = true;
+        recordCallComplete(decodedUrl);
         logger.info('Client aborted stream', { url: decodedUrl });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
@@ -361,6 +445,8 @@ app.all('/proxy-stream', async (req, res) => {
     });
 
   } catch (error) {
+    recordFailure();
+    recordCallComplete(decodedUrl);
     logger.error('Stream proxy failed', { url, error: error.message, status: error.response?.status });
     if (!res.headersSent) {
       res.status(error.response?.status || 500).json({ 

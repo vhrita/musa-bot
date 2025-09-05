@@ -226,27 +226,10 @@ export class MusicManager {
       // Create audio resource based on service type
       let resource;
       if (song.service === 'radio' || song.service === 'internet_archive') {
-        // For radio streams and internet archive, create a stream using ffmpeg
         resource = await this.createRadioResource(song.url);
       } else if (song.service === 'youtube') {
-        // Mark as active stream to prevent conflicts
-        this.activeStreams.add(song.url);
-        
-        // For YouTube, try cached stream URL first, then get fresh one
-        let streamUrl = this.getCachedStreamUrl(song.url);
-        if (!streamUrl) {
-          streamUrl = await this.getStreamUrlWithCache(song);
-        }
-        
-        if (streamUrl) {
-          // Use FFmpeg for YouTube streams too for better compatibility
-          resource = await this.createRadioResource(streamUrl);
-        } else {
-          this.activeStreams.delete(song.url); // Remove from active if failed
-          throw new Error('Failed to get YouTube stream URL');
-        }
+        resource = await this.createYouTubeStreamResource(song);
       } else {
-        // For other sources, use regular createAudioResource
         resource = createAudioResource(song.url, {
           inlineVolume: true,
           metadata: {
@@ -535,6 +518,134 @@ export class MusicManager {
   isConnected(guildId: string): boolean {
     const connection = this.voiceConnections.get(guildId);
     return connection?.state.status === VoiceConnectionStatus.Ready;
+  }
+
+  private async createYouTubeStreamResource(song: QueuedSong) {
+    // Mark as active stream to prevent conflicts
+    this.activeStreams.add(song.url);
+    
+    try {
+      // For YouTube, try cached stream URL first, then get fresh one
+      let streamUrl = this.getCachedStreamUrl(song.url);
+      if (!streamUrl) {
+        streamUrl = await this.getStreamUrlWithCache(song);
+      }
+      
+      if (streamUrl) {
+        // Use FFmpeg for YouTube streams with retry logic
+        return await this.createYouTubeResource(streamUrl, song.title);
+      } else {
+        throw new Error('Failed to get YouTube stream URL');
+      }
+    } catch (error) {
+      logError('YouTube stream failed, trying direct URL fallback', error as Error, {
+        title: song.title,
+        url: song.url
+      });
+      
+      // Fallback: try direct YouTube URL (may work in some cases)
+      try {
+        const directStreamUrl = await this.getDirectStreamUrl(song);
+        if (directStreamUrl) {
+          return await this.createYouTubeResource(directStreamUrl, song.title);
+        } else {
+          throw new Error('All YouTube streaming methods failed');
+        }
+      } catch (fallbackError) {
+        this.activeStreams.delete(song.url);
+        throw fallbackError;
+      }
+    }
+  }
+
+  private async createYouTubeResource(streamUrl: string, title: string) {
+    logEvent('creating_youtube_resource', { streamUrl, title });
+
+    // Enhanced FFmpeg arguments specifically for YouTube streams
+    const ffmpegArgs = [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1', 
+      '-reconnect_delay_max', '5',
+      '-rw_timeout', '30000000', // 30 second timeout
+      '-analyzeduration', '1M',   // Reduced for faster start
+      '-probesize', '2M',         // Reduced for faster start
+      '-f', 'mp3',
+      '-i', streamUrl,
+      '-bufsize', '1M',           // Smaller buffer for faster start
+      '-flush_packets', '0',
+      '-max_delay', '2000000',    // 2 second max delay
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1'
+    ];
+
+    logEvent('youtube_ffmpeg_command', {
+      streamUrl,
+      title,
+      command: 'ffmpeg',
+      args: ffmpegArgs
+    });
+
+    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+
+    ffmpegProcess.on('error', (error: Error) => {
+      logError('YouTube FFmpeg process error', error, {
+        streamUrl,
+        title,
+        pid: ffmpegProcess.pid
+      });
+    });
+
+    ffmpegProcess.on('exit', (code: number | null) => {
+      logEvent('youtube_ffmpeg_process_exit', {
+        streamUrl,
+        title,
+        exitCode: code
+      });
+    });
+
+    if (!ffmpegProcess.stdout) {
+      throw new Error('Failed to create YouTube ffmpeg process stdout');
+    }
+
+    logEvent('youtube_ffmpeg_process_created', {
+      streamUrl,
+      title,
+      pid: ffmpegProcess.pid
+    });
+
+    // Create audio resource from ffmpeg output
+    const resource = createAudioResource(ffmpegProcess.stdout, {
+      inputType: StreamType.Raw,
+      inlineVolume: true,
+      metadata: {
+        title: title
+      }
+    });
+
+    logEvent('youtube_audio_resource_created', {
+      streamUrl,
+      title,
+      type: 'pcm_stream'
+    });
+
+    return resource;
+  }
+
+  private async getDirectStreamUrl(song: QueuedSong): Promise<string> {
+    logEvent('attempting_direct_stream_url', { title: song.title, url: song.url });
+    
+    // Try to get stream URL with bypass=true to get direct YouTube URL
+    const youtubeService = this.multiSourceManager.getService('youtube') as any;
+    if (youtubeService?.getStreamUrlDirect) {
+      return await youtubeService.getStreamUrlDirect(song);
+    }
+    
+    // If no direct method available, return empty (will cause fallback to fail)
+    throw new Error('Direct stream URL not available');
   }
 
   private async createRadioResource(url: string) {
