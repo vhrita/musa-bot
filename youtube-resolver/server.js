@@ -403,9 +403,27 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       url: decodedUrl,
       responseType: isHeadRequest ? 'text' : 'stream',
       timeout: isHeadRequest ? 15000 : 0, // No timeout for streaming, 15s for HEAD
+      maxRedirects: 5,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Connection': 'keep-alive',
+        'Keep-Alive': 'timeout=600',
+        'Accept': 'audio/mp4,audio/*,*/*',
+        'Accept-Encoding': 'identity'
+      },
+      // Better connection handling for streaming
+      httpsAgent: require('https').Agent({
+        keepAlive: true,
+        keepAliveMsecs: 30000,
+        maxSockets: 5,
+        timeout: 600000 // 10 minutes
+      }),
+      httpAgent: require('http').Agent({
+        keepAlive: true,
+        keepAliveMsecs: 30000,
+        maxSockets: 5,
+        timeout: 600000 // 10 minutes
+      })
     };
 
     // Add range header for partial content requests
@@ -419,9 +437,10 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
     res.set({
       'Content-Type': response.headers['content-type'] || 'audio/mp4',
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-store',
       'Connection': 'keep-alive',
-      'Keep-Alive': 'timeout=300, max=1000'
+      'Keep-Alive': 'timeout=600, max=100',
+      'Transfer-Encoding': 'chunked'
     });
 
     // Copy important headers from YouTube
@@ -452,9 +471,16 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         streamEnded = true;
         recordFailure();
         recordCallComplete(decodedUrl);
-        logger.error('Stream proxy error', { error: error.message, url: decodedUrl });
+        logger.error('Stream proxy error', { 
+          error: error.message, 
+          code: error.code,
+          url: decodedUrl,
+          clientConnected: !req.destroyed
+        });
         if (!res.headersSent) {
           res.status(500).json({ error: 'Stream proxy failed' });
+        } else {
+          res.destroy();
         }
       }
     });
@@ -481,7 +507,11 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       if (!streamEnded) {
         streamEnded = true;
         recordCallComplete(decodedUrl);
-        logger.info('Client disconnected from stream', { url: decodedUrl });
+        logger.warn('Client disconnected from stream', { 
+          url: decodedUrl,
+          userAgent: req.headers['user-agent'],
+          duration: Date.now() - new Date().getTime()
+        });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
         }
@@ -492,7 +522,11 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       if (!streamEnded) {
         streamEnded = true;
         recordCallComplete(decodedUrl);
-        logger.info('Client aborted stream', { url: decodedUrl });
+        logger.warn('Client aborted stream', { 
+          url: decodedUrl,
+          userAgent: req.headers['user-agent'],
+          reason: 'client_abort'
+        });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
         }
@@ -502,13 +536,32 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
   } catch (error) {
     recordFailure();
     recordCallComplete(decodedUrl);
-    logger.error('Stream proxy failed', { url: decodedUrl, error: error.message, status: error.response?.status });
+    
+    const errorDetails = {
+      url: decodedUrl, 
+      error: error.message, 
+      code: error.code,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      isTimeout: error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT',
+      isNetworkError: error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED'
+    };
+    
+    logger.error('Stream proxy failed', errorDetails);
+    
     if (!res.headersSent) {
-      res.status(error.response?.status || 500).json({ 
+      const statusCode = error.response?.status || (errorDetails.isTimeout ? 408 : 500);
+      res.status(statusCode).json({ 
         error: 'Stream proxy failed', 
-        message: error.message 
+        message: error.message,
+        code: error.code
       });
+    } else {
+      res.destroy();
     }
+  } finally {
+    // Process next queued request for this URL
+    processUrlQueue(decodedUrl);
   }
 }
 
