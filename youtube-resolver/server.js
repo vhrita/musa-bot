@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const winston = require('winston');
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 3000;
 
 // Configure logging
 const logger = winston.createLogger({
@@ -30,8 +30,23 @@ function getCookieArgs() {
     // Check if file exists
     const fs = require('fs');
     if (fs.existsSync(cookiesPath)) {
-      logger.info('Using cookies file', { path: cookiesPath });
-      return ['--cookies', cookiesPath];
+      // Copy cookies to a writable location (yt-dlp needs write access)
+      const tempCookiesPath = '/tmp/cookies.txt';
+      try {
+        fs.copyFileSync(cookiesPath, tempCookiesPath);
+        logger.info('Using cookies file (copied to writable location)', { 
+          original: cookiesPath,
+          temp: tempCookiesPath 
+        });
+        return ['--cookies', tempCookiesPath];
+      } catch (error) {
+        logger.error('Failed to copy cookies file', { 
+          error: error.message,
+          path: cookiesPath 
+        });
+        // Fallback: try to use original path with --no-cookies-from-browser
+        return ['--cookies', cookiesPath, '--no-cookies-save'];
+      }
     } else {
       logger.warn('Cookies file not found', { path: cookiesPath });
     }
@@ -41,6 +56,23 @@ function getCookieArgs() {
   logger.info('No cookies configured, proceeding without authentication');
   return [];
 }
+
+// Cleanup function for temporary files
+function cleanupTempFiles() {
+  const fs = require('fs');
+  try {
+    if (fs.existsSync('/tmp/cookies.txt')) {
+      fs.unlinkSync('/tmp/cookies.txt');
+      logger.info('Cleaned up temporary cookies file');
+    }
+  } catch (error) {
+    logger.warn('Failed to cleanup temp cookies', { error: error.message });
+  }
+}
+
+// Cleanup on exit
+process.on('SIGTERM', cleanupTempFiles);
+process.on('SIGINT', cleanupTempFiles);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

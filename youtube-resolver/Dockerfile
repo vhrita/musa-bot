@@ -23,8 +23,9 @@ RUN npm ci --omit=dev
 COPY . .
 
 # Pasta de logs e cookies; symlink p/ compat com 'cookies/cookies.txt'
-RUN mkdir -p logs /data/cookies \
- && ln -s /data/cookies /app/cookies || true
+RUN mkdir -p logs /data/cookies /tmp \
+ && ln -s /data/cookies /app/cookies || true \
+ && chmod 777 /tmp
 
 # Usuário não-root
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001

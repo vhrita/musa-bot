@@ -63,6 +63,8 @@ docker run -d \
   youtube-resolver
 
 # Para Raspberry Pi com systemd (comando que vai no seu script)
+# IMPORTANTE: Volume montado como read-only (:ro) para segurança
+# O resolver copia os cookies para /tmp automaticamente
 docker run -d \
   --name youtube-resolver \
   --restart unless-stopped \
