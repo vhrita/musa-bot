@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const winston = require('winston');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
 
 // Configure logging
 const logger = winston.createLogger({
