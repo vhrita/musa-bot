@@ -26,12 +26,15 @@ sudo apt update
 sudo apt install python3 python3-pip
 pip3 install yt-dlp
 
-# 4. Instalar Chromium (para cookies)
-sudo apt install chromium-browser
+# 4. Configurar cookies do YouTube
+# Copie seus cookies.txt para o servidor
+# Exemplo: usando scp
+scp cookies.txt usuario@servidor:/home/usuario/musa-bot/youtube-resolver/cookies/
 
-# 5. Fazer login no YouTube
-chromium-browser --no-sandbox
-# Vai para youtube.com e faz login
+# 5. Configurar variáveis de ambiente
+export YTDLP_COOKIES_PATH=/home/usuario/musa-bot/youtube-resolver/cookies/cookies.txt
+# ou
+export YTDLP_COOKIES=/home/usuario/musa-bot/youtube-resolver/cookies/cookies.txt
 ```
 
 ### **2. Configurar o Bot na VPS:**
@@ -47,9 +50,62 @@ export RESOLVER_URL="http://IP_DO_SEU_SERVIDOR:3001"
 # No servidor resolver
 npm start
 
-# Ou com Docker
+# Ou com Docker (método recomendado)
 docker build -t youtube-resolver .
-docker run -p 3001:3001 youtube-resolver
+
+# Executar com cookies persistentes
+docker run -d \
+  --name youtube-resolver \
+  --restart unless-stopped \
+  -p 3001:3001 \
+  -v /path/to/your/cookies:/data/cookies:ro \
+  -e YTDLP_COOKIES_PATH=/data/cookies/cookies.txt \
+  youtube-resolver
+
+# Para Raspberry Pi com systemd (comando que vai no seu script)
+docker run -d \
+  --name youtube-resolver \
+  --restart unless-stopped \
+  -p 3001:3001 \
+  -v /home/pi/cookies:/data/cookies:ro \
+  -e YTDLP_COOKIES_PATH=/data/cookies/cookies.txt \
+  youtube-resolver
+```
+
+### **🔄 Systemd Service (Raspberry Pi):**
+
+Crie o arquivo `/etc/systemd/system/youtube-resolver.service`:
+
+```ini
+[Unit]
+Description=YouTube Resolver for Musa Bot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStartPre=-/usr/bin/docker stop youtube-resolver
+ExecStartPre=-/usr/bin/docker rm youtube-resolver
+ExecStart=/usr/bin/docker run -d \
+  --name youtube-resolver \
+  --restart unless-stopped \
+  -p 3001:3001 \
+  -v /home/pi/cookies:/data/cookies:ro \
+  -e YTDLP_COOKIES_PATH=/data/cookies/cookies.txt \
+  youtube-resolver
+ExecStop=/usr/bin/docker stop youtube-resolver
+ExecStopPost=/usr/bin/docker rm youtube-resolver
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Ativar:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable youtube-resolver
+sudo systemctl start youtube-resolver
 ```
 
 ## 🔧 **API Endpoints:**

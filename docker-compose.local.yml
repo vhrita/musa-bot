@@ -9,11 +9,12 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      # Compartilhar cookies do Chrome local (se existir)
-      - ~/.config/google-chrome:/home/node/.config/google-chrome:ro
+      # Volume para cookies persistentes
+      - ./cookies:/data/cookies:ro
       - ./youtube-resolver/logs:/app/logs
     environment:
       - NODE_ENV=development
+      - YTDLP_COOKIES_PATH=/data/cookies/cookies.txt
     networks:
       - musa-network
     healthcheck:

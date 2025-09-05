@@ -1,45 +1,38 @@
-# YouTube Resolver API for Raspberry Pi
-# Simple Express.js server to resolve YouTube URLs using local cookies
-
-FROM node:18-alpine
+FROM node:lts-alpine
 
 WORKDIR /app
 
-# Install dependencies
+# Dependências mínimas + yt-dlp do repositório Alpine
 RUN apk add --no-cache \
     python3 \
-    py3-pip \
     ffmpeg \
     curl \
-    chromium \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
     ca-certificates \
-    ttf-freefont
+    yt-dlp
 
-# Install yt-dlp
-RUN pip3 install yt-dlp
+# Variáveis úteis
+ENV YTDLP_COOKIES_PATH=/data/cookies/cookies.txt \
+    YTDLP_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36" \
+    NODE_ENV=production
 
-# Copy package files first for better caching
+# Instala deps Node
 COPY package*.json ./
-RUN npm install
+RUN npm ci --omit=dev
 
-# Copy source code
+# Código
 COPY . .
 
-# Create logs directory
-RUN mkdir -p logs
+# Pasta de logs e cookies; symlink p/ compat com 'cookies/cookies.txt'
+RUN mkdir -p logs /data/cookies \
+ && ln -s /data/cookies /app/cookies || true
 
-# Add non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+# Usuário não-root
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 USER nodejs
 
 EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:3001/health || exit 1
 
 CMD ["node", "server.js"]

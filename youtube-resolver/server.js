@@ -22,6 +22,26 @@ const logger = winston.createLogger({
 app.use(cors());
 app.use(express.json());
 
+// Function to get cookie arguments for yt-dlp
+function getCookieArgs() {
+  const cookiesPath = process.env.YTDLP_COOKIES_PATH || process.env.YTDLP_COOKIES;
+  
+  if (cookiesPath) {
+    // Check if file exists
+    const fs = require('fs');
+    if (fs.existsSync(cookiesPath)) {
+      logger.info('Using cookies file', { path: cookiesPath });
+      return ['--cookies', cookiesPath];
+    } else {
+      logger.warn('Cookies file not found', { path: cookiesPath });
+    }
+  }
+  
+  // Fallback: no cookies
+  logger.info('No cookies configured, proceeding without authentication');
+  return [];
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -79,7 +99,7 @@ app.post('/stream', async (req, res) => {
   }
 });
 
-// Search YouTube using yt-dlp with cookies-from-browser
+// Search YouTube using yt-dlp with cookies file
 function searchYouTube(query, maxResults) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
@@ -88,7 +108,7 @@ function searchYouTube(query, maxResults) {
       '--dump-json',
       '--no-warnings',
       '--skip-download',
-      '--cookies-from-browser', 'chrome',  // Use Chrome cookies directly
+      ...getCookieArgs(),  // Add cookies if available
       searchQuery
     ];
 
@@ -133,7 +153,11 @@ function searchYouTube(query, maxResults) {
             });
           }
         } catch (parseError) {
-          // Skip malformed JSON lines
+          // Skip malformed JSON lines - log for debugging
+          logger.warn('Failed to parse yt-dlp JSON output', { 
+            error: parseError.message,
+            line: line.substring(0, 100)
+          });
           continue;
         }
       }
@@ -148,14 +172,14 @@ function searchYouTube(query, maxResults) {
   });
 }
 
-// Get stream URL using yt-dlp with cookies-from-browser
+// Get stream URL using yt-dlp with cookies file
 function getStreamUrl(videoUrl) {
   return new Promise((resolve, reject) => {
     const ytDlpArgs = [
       '--get-url',
       '--format', 'bestaudio[ext=m4a]/bestaudio/best',
       '--no-playlist',
-      '--cookies-from-browser', 'chrome',  // Use Chrome cookies directly
+      ...getCookieArgs(),  // Add cookies if available
       videoUrl
     ];
 
