@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
 const winston = require('winston');
+const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -209,7 +210,7 @@ app.post('/search', async (req, res) => {
 
 // Get stream URL for a specific video
 app.post('/stream', async (req, res) => {
-  const { url } = req.body;
+  const { url, proxy = false } = req.body;
   
   // Extract URL from MusicSource object if needed
   const videoUrl = typeof url === 'string' ? url : url?.url;
@@ -218,13 +219,20 @@ app.post('/stream', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  logger.info('Stream URL request', { url: videoUrl });
+  logger.info('Stream URL request', { url: videoUrl, proxy });
 
   try {
     const streamUrl = await getStreamUrl(videoUrl);
     if (streamUrl) {
       logger.info('Stream URL resolved', { originalUrl: videoUrl, resolved: true });
-      res.json({ streamUrl });
+      
+      if (proxy) {
+        // Return proxy URL instead of direct YouTube URL
+        const proxyUrl = `${req.protocol}://${req.get('host')}/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
+        res.json({ streamUrl: proxyUrl });
+      } else {
+        res.json({ streamUrl });
+      }
     } else {
       logger.warn('Stream URL not found', { url: videoUrl });
       res.status(404).json({ error: 'Stream URL not found' });
@@ -232,6 +240,93 @@ app.post('/stream', async (req, res) => {
   } catch (error) {
     logger.error('Stream resolution failed', { url: videoUrl, error: error.message });
     res.status(500).json({ error: 'Stream resolution failed', message: error.message });
+  }
+});
+
+// Proxy stream endpoint - handles both GET and HEAD requests
+app.all('/proxy-stream', async (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL parameter is required' });
+  }
+
+  try {
+    const decodedUrl = decodeURIComponent(url);
+    logger.info('Proxying stream', { 
+      originalUrl: decodedUrl, 
+      method: req.method,
+      range: req.headers.range 
+    });
+    
+    // For HEAD requests, just get headers
+    const axiosMethod = req.method === 'HEAD' ? 'HEAD' : 'GET';
+    const isHeadRequest = req.method === 'HEAD';
+    
+    const axiosConfig = {
+      method: axiosMethod,
+      url: decodedUrl,
+      responseType: isHeadRequest ? 'text' : 'stream',
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
+      }
+    };
+
+    // Add range header for partial content requests
+    if (req.headers.range) {
+      axiosConfig.headers['Range'] = req.headers.range;
+    }
+
+    const response = await axios(axiosConfig);
+
+    // Set response headers
+    res.set({
+      'Content-Type': response.headers['content-type'] || 'audio/mp4',
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-cache'
+    });
+
+    // Copy important headers from YouTube
+    if (response.headers['content-length']) {
+      res.set('Content-Length', response.headers['content-length']);
+    }
+    if (response.headers['content-range']) {
+      res.set('Content-Range', response.headers['content-range']);
+    }
+
+    // Set appropriate status code
+    const statusCode = response.status === 206 ? 206 : 200;
+    res.status(statusCode);
+
+    // For HEAD requests, just send headers
+    if (isHeadRequest) {
+      logger.info('HEAD request completed', { url: decodedUrl, status: statusCode });
+      return res.end();
+    }
+
+    // For GET requests, pipe the stream
+    response.data.pipe(res);
+
+    response.data.on('error', (error) => {
+      logger.error('Stream proxy error', { error: error.message, url: decodedUrl });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Stream proxy failed' });
+      }
+    });
+
+    response.data.on('end', () => {
+      logger.info('Stream proxy completed', { url: decodedUrl });
+    });
+
+  } catch (error) {
+    logger.error('Stream proxy failed', { url, error: error.message, status: error.response?.status });
+    if (!res.headersSent) {
+      res.status(error.response?.status || 500).json({ 
+        error: 'Stream proxy failed', 
+        message: error.message 
+      });
+    }
   }
 });
 

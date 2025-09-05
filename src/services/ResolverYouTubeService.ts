@@ -246,7 +246,8 @@ export class ResolverYouTubeService extends BaseMusicService {
     });
 
     const response = await axios.post(`${this.resolverUrl}/stream`, {
-      url
+      url,
+      proxy: true // Enable proxy to avoid IP-based 403 errors
     }, {
       timeout: 120000 // Increased to 120 seconds for Raspberry Pi stream resolution
     });
@@ -256,7 +257,8 @@ export class ResolverYouTubeService extends BaseMusicService {
     logEvent('resolver_youtube_stream_completed', {
       url,
       hasStreamUrl: !!streamUrl,
-      method: 'resolver'
+      method: 'resolver',
+      usingProxy: true
     });
 
     return streamUrl || null;
