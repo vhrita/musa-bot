@@ -210,7 +210,7 @@ app.post('/search', async (req, res) => {
 
 // Get stream URL for a specific video
 app.post('/stream', async (req, res) => {
-  const { url, proxy = false } = req.body;
+  const { url, proxy = false, bypass = false } = req.body;
   
   // Extract URL from MusicSource object if needed
   const videoUrl = typeof url === 'string' ? url : url?.url;
@@ -219,14 +219,17 @@ app.post('/stream', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  logger.info('Stream URL request', { url: videoUrl, proxy });
+  logger.info('Stream URL request', { url: videoUrl, proxy, bypass });
 
   try {
     const streamUrl = await getStreamUrl(videoUrl);
     if (streamUrl) {
       logger.info('Stream URL resolved', { originalUrl: videoUrl, resolved: true });
       
-      if (proxy) {
+      if (bypass) {
+        // Return direct YouTube URL (may cause 403 on VPS but good for testing)
+        res.json({ streamUrl });
+      } else if (proxy) {
         // Return proxy URL instead of direct YouTube URL
         const proxyUrl = `${req.protocol}://${req.get('host')}/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
         res.json({ streamUrl: proxyUrl });
@@ -280,11 +283,13 @@ app.all('/proxy-stream', async (req, res) => {
 
     const response = await axios(axiosConfig);
 
-    // Set response headers
+    // Set response headers for better streaming
     res.set({
       'Content-Type': response.headers['content-type'] || 'audio/mp4',
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-cache'
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Keep-Alive': 'timeout=300, max=1000'
     });
 
     // Copy important headers from YouTube
@@ -308,15 +313,51 @@ app.all('/proxy-stream', async (req, res) => {
     // For GET requests, pipe the stream
     response.data.pipe(res);
 
+    let streamEnded = false;
+
     response.data.on('error', (error) => {
-      logger.error('Stream proxy error', { error: error.message, url: decodedUrl });
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Stream proxy failed' });
+      if (!streamEnded) {
+        streamEnded = true;
+        logger.error('Stream proxy error', { error: error.message, url: decodedUrl });
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Stream proxy failed' });
+        }
       }
     });
 
     response.data.on('end', () => {
-      logger.info('Stream proxy completed', { url: decodedUrl });
+      if (!streamEnded) {
+        streamEnded = true;
+        logger.info('Stream proxy completed', { url: decodedUrl });
+      }
+    });
+
+    response.data.on('close', () => {
+      if (!streamEnded) {
+        streamEnded = true;
+        logger.info('Stream proxy closed', { url: decodedUrl });
+      }
+    });
+
+    // Handle client disconnect
+    req.on('close', () => {
+      if (!streamEnded) {
+        streamEnded = true;
+        logger.info('Client disconnected from stream', { url: decodedUrl });
+        if (response.data && typeof response.data.destroy === 'function') {
+          response.data.destroy();
+        }
+      }
+    });
+
+    req.on('aborted', () => {
+      if (!streamEnded) {
+        streamEnded = true;
+        logger.info('Client aborted stream', { url: decodedUrl });
+        if (response.data && typeof response.data.destroy === 'function') {
+          response.data.destroy();
+        }
+      }
     });
 
   } catch (error) {
