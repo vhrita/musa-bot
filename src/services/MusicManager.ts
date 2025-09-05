@@ -561,19 +561,12 @@ export class MusicManager {
   private async createYouTubeResource(streamUrl: string, title: string) {
     logEvent('creating_youtube_resource', { streamUrl, title });
 
-    // Enhanced FFmpeg arguments specifically for YouTube streams
+    // Simplified FFmpeg arguments without aggressive reconnection that causes multiple simultaneous requests
     const ffmpegArgs = [
-      '-reconnect', '1',
-      '-reconnect_streamed', '1', 
-      '-reconnect_delay_max', '5',
-      '-rw_timeout', '30000000', // 30 second timeout
-      '-analyzeduration', '1M',   // Reduced for faster start
-      '-probesize', '2M',         // Reduced for faster start
-      '-f', 'mp3',
+      '-loglevel', 'error',              // Reduce FFmpeg logging
+      '-re',                             // Read input at native frame rate (prevents rushing)
       '-i', streamUrl,
-      '-bufsize', '1M',           // Smaller buffer for faster start
-      '-flush_packets', '0',
-      '-max_delay', '2000000',    // 2 second max delay
+      '-acodec', 'pcm_s16le',           // Direct PCM conversion
       '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
@@ -588,8 +581,21 @@ export class MusicManager {
     });
 
     const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-      stdio: ['ignore', 'pipe', 'ignore']
+      stdio: ['ignore', 'pipe', 'pipe'] // Capture stderr for debugging
     });
+
+    // Log FFmpeg errors to understand what's happening
+    if (ffmpegProcess.stderr) {
+      ffmpegProcess.stderr.on('data', (data) => {
+        const errorMsg = data.toString();
+        if (errorMsg.includes('HTTP error') || errorMsg.includes('Server returned')) {
+          logError('FFmpeg HTTP error', new Error(errorMsg), {
+            streamUrl,
+            title
+          });
+        }
+      });
+    }
 
     ffmpegProcess.on('error', (error: Error) => {
       logError('YouTube FFmpeg process error', error, {

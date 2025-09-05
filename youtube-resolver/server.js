@@ -14,13 +14,14 @@ const MAX_CACHE_SIZE = 100; // Maximum cache entries
 
 // Rate limiting and circuit breaker
 const activeCalls = new Map(); // Track active calls by URL
-const MAX_CONCURRENT_CALLS = 3; // Max concurrent calls per URL
+const urlQueues = new Map(); // Queue pending requests per URL
+const MAX_CONCURRENT_CALLS = 1; // REDUCED: Max 1 concurrent call per URL to prevent FFmpeg multi-connection abuse
 const CIRCUIT_BREAKER = {
   failures: 0,
   lastFailure: 0,
   isOpen: false,
-  threshold: 5, // Open circuit after 5 failures
-  timeout: 30000 // Reset after 30 seconds
+  threshold: 3, // REDUCED: Open circuit after 3 failures (was 5)
+  timeout: 60000 // INCREASED: Reset after 60 seconds (was 30)
 };
 
 // Configure logging
@@ -107,6 +108,47 @@ function recordCallComplete(url) {
     activeCalls.delete(url);
   } else {
     activeCalls.set(url, current - 1);
+  }
+  
+  // Process any queued requests for this URL
+  processUrlQueue(url);
+}
+
+// URL queue management
+function addToUrlQueue(url, req, res) {
+  if (!urlQueues.has(url)) {
+    urlQueues.set(url, []);
+  }
+  
+  const queue = urlQueues.get(url);
+  queue.push({ req, res, timestamp: Date.now() });
+  
+  logger.info('Request queued', { url, queueSize: queue.length });
+  
+  // Set timeout to reject old requests
+  setTimeout(() => {
+    const index = queue.findIndex(item => item.req === req);
+    if (index !== -1) {
+      queue.splice(index, 1);
+      if (!res.headersSent) {
+        res.status(408).json({ error: 'Request timeout - too many concurrent requests' });
+      }
+    }
+  }, 30000); // 30 second timeout
+}
+
+function processUrlQueue(url) {
+  const queue = urlQueues.get(url);
+  if (!queue || queue.length === 0) {
+    return;
+  }
+  
+  if (canMakeCall(url)) {
+    const { req, res } = queue.shift();
+    if (!res.headersSent) {
+      // Continue processing this request
+      handleProxyStreamRequest(req, res, url);
+    }
   }
 }
 
@@ -325,10 +367,23 @@ app.all('/proxy-stream', async (req, res) => {
 
   // Check rate limiting
   if (!canMakeCall(decodedUrl)) {
-    logger.warn('Rate limit exceeded', { url: decodedUrl, activeCalls: activeCalls.get(decodedUrl) });
-    return res.status(429).json({ error: 'Too many concurrent requests for this URL' });
+    logger.warn('Rate limit exceeded, queueing request', { 
+      url: decodedUrl, 
+      activeCalls: activeCalls.get(decodedUrl),
+      queueSize: (urlQueues.get(decodedUrl) || []).length
+    });
+    
+    // Add to queue instead of rejecting immediately
+    addToUrlQueue(decodedUrl, req, res);
+    return;
   }
 
+  // Process immediately if not rate limited
+  await handleProxyStreamRequest(req, res, decodedUrl);
+});
+
+// Separated function to handle the actual proxy stream logic
+async function handleProxyStreamRequest(req, res, decodedUrl) {
   recordActiveCall(decodedUrl);
 
   try {
@@ -447,7 +502,7 @@ app.all('/proxy-stream', async (req, res) => {
   } catch (error) {
     recordFailure();
     recordCallComplete(decodedUrl);
-    logger.error('Stream proxy failed', { url, error: error.message, status: error.response?.status });
+    logger.error('Stream proxy failed', { url: decodedUrl, error: error.message, status: error.response?.status });
     if (!res.headersSent) {
       res.status(error.response?.status || 500).json({ 
         error: 'Stream proxy failed', 
@@ -455,7 +510,7 @@ app.all('/proxy-stream', async (req, res) => {
       });
     }
   }
-});
+}
 
 // Quick search YouTube using minimal yt-dlp options for faster results
 function searchYouTubeQuick(query, maxResults) {
