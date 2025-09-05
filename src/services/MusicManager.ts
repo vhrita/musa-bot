@@ -22,9 +22,20 @@ export class MusicManager {
   private readonly voiceConnections = new Map<string, VoiceConnection>();
   private readonly playerSubscriptions = new Map<string, PlayerSubscription>();
   private readonly multiSourceManager: MultiSourceManager;
+  
+  // Stream URL pre-caching system
+  private readonly streamCache = new Map<string, { url: string; timestamp: number }>();
+  private readonly streamCacheTTL = 10 * 60 * 1000; // 10 minutes
+  private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded
+  private readonly activeStreams = new Set<string>(); // Track active streaming URLs
 
   constructor() {
     this.multiSourceManager = new MultiSourceManager();
+    
+    // Clean up expired cache entries every 5 minutes
+    setInterval(() => {
+      this.cleanupStreamCache();
+    }, 5 * 60 * 1000);
   }
 
   async joinVoiceChannel(channel: VoiceChannel): Promise<VoiceConnection | null> {
@@ -141,6 +152,11 @@ export class MusicManager {
       requestedBy: song.requestedBy
     });
 
+    // Start preloading next songs asynchronously (DISABLED temporarily to debug abort errors)
+    // this.preloadNextSongs(guildId).catch(error => {
+    //   logError('Preload failed', error as Error, { guildId });
+    // });
+
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
       await this.playNext(guildId);
@@ -213,18 +229,21 @@ export class MusicManager {
         // For radio streams and internet archive, create a stream using ffmpeg
         resource = await this.createRadioResource(song.url);
       } else if (song.service === 'youtube') {
-        // For YouTube, get the actual stream URL first
-        const youtubeService = this.multiSourceManager.getService('youtube') as any;
-        if (youtubeService?.getStreamUrl) {
-          const streamUrl = await youtubeService.getStreamUrl(song);
-          if (streamUrl) {
-            // Use FFmpeg for YouTube streams too for better compatibility
-            resource = await this.createRadioResource(streamUrl);
-          } else {
-            throw new Error('Failed to get YouTube stream URL');
-          }
+        // Mark as active stream to prevent conflicts
+        this.activeStreams.add(song.url);
+        
+        // For YouTube, try cached stream URL first, then get fresh one
+        let streamUrl = this.getCachedStreamUrl(song.url);
+        if (!streamUrl) {
+          streamUrl = await this.getStreamUrlWithCache(song);
+        }
+        
+        if (streamUrl) {
+          // Use FFmpeg for YouTube streams too for better compatibility
+          resource = await this.createRadioResource(streamUrl);
         } else {
-          throw new Error('YouTube service not available');
+          this.activeStreams.delete(song.url); // Remove from active if failed
+          throw new Error('Failed to get YouTube stream URL');
         }
       } else {
         // For other sources, use regular createAudioResource
@@ -257,6 +276,11 @@ export class MusicManager {
             title: song.title,
             service: song.service 
           });
+
+          // Start preloading next songs when current song starts playing (DISABLED temporarily)
+          // this.preloadNextSongs(guildId).catch(error => {
+          //   logError('Preload during playback failed', error as Error, { guildId });
+          // });
         });
 
         player.on(AudioPlayerStatus.Paused, () => {
@@ -268,6 +292,11 @@ export class MusicManager {
           guildData.isPlaying = false;
           guildData.isPaused = false;
           
+          // Clean up active stream tracking
+          if (guildData.currentSong) {
+            this.activeStreams.delete(guildData.currentSong.url);
+          }
+          
           logEvent('audio_player_idle', { guildId });
           
           // Play next song
@@ -275,6 +304,11 @@ export class MusicManager {
         });
 
         player.on('error', (error) => {
+          // Clean up active stream tracking
+          if (guildData.currentSong) {
+            this.activeStreams.delete(guildData.currentSong.url);
+          }
+          
           logError('Audio player error', error, { 
             guildId, 
             title: song.title,
@@ -563,5 +597,135 @@ export class MusicManager {
     });
 
     return resource;
+  }
+
+  // Stream URL caching and preloading methods
+  private cleanupStreamCache(): void {
+    const now = Date.now();
+    for (const [key, cache] of this.streamCache.entries()) {
+      if (now - cache.timestamp > this.streamCacheTTL) {
+        this.streamCache.delete(key);
+        logEvent('stream_cache_expired', { url: key });
+      }
+    }
+  }
+
+  private getCachedStreamUrl(songUrl: string): string | null {
+    const cache = this.streamCache.get(songUrl);
+    if (cache && Date.now() - cache.timestamp < this.streamCacheTTL) {
+      logEvent('stream_cache_hit', { url: songUrl });
+      return cache.url;
+    }
+    return null;
+  }
+
+  private setCachedStreamUrl(songUrl: string, streamUrl: string): void {
+    this.streamCache.set(songUrl, {
+      url: streamUrl,
+      timestamp: Date.now()
+    });
+    logEvent('stream_cache_set', { songUrl, streamUrl });
+  }
+
+  // Preload next songs in queue
+  private async preloadNextSongs(guildId: string): Promise<void> {
+    const guildData = this.getGuildData(guildId);
+    
+    // Don't preload if no songs in queue or if already playing/loading
+    if (guildData.queue.length === 0) {
+      return;
+    }
+
+    // Only preload next song when current song is stable (playing for >30s)
+    if (guildData.isPlaying && guildData.currentSong) {
+      // Wait a bit before preloading to avoid conflicts
+      setTimeout(() => {
+        this.preloadNextSongsDelayed(guildId);
+      }, 30000); // Wait 30 seconds after song starts
+      return;
+    }
+
+    this.preloadNextSongsDelayed(guildId);
+  }
+
+  private async preloadNextSongsDelayed(guildId: string): Promise<void> {
+    const guildData = this.getGuildData(guildId);
+    const songsToPreload = guildData.queue.slice(0, 1); // Only preload next song
+
+    for (const song of songsToPreload) {
+      if (song.service === 'youtube' && !this.getCachedStreamUrl(song.url)) {
+        // Don't preload if we're already preloading this URL
+        if (!this.preloadingUrls.has(song.url)) {
+          this.preloadStreamUrl(song);
+        }
+      }
+    }
+  }
+
+  private async preloadStreamUrl(song: QueuedSong): Promise<void> {
+    if (this.preloadingUrls.has(song.url)) {
+      return; // Already preloading
+    }
+
+    // Don't preload if URL is currently being streamed
+    if (this.activeStreams.has(song.url)) {
+      logEvent('stream_preload_skipped_active', { 
+        title: song.title, 
+        url: song.url,
+        reason: 'already_streaming'
+      });
+      return;
+    }
+
+    this.preloadingUrls.add(song.url);
+    
+    try {
+      logEvent('stream_preload_started', { 
+        title: song.title, 
+        url: song.url,
+        service: song.service 
+      });
+
+      const youtubeService = this.multiSourceManager.getService('youtube') as any;
+      if (youtubeService?.getStreamUrl) {
+        const streamUrl = await youtubeService.getStreamUrl(song);
+        if (streamUrl) {
+          this.setCachedStreamUrl(song.url, streamUrl);
+          logEvent('stream_preload_completed', { 
+            title: song.title, 
+            url: song.url,
+            streamUrl 
+          });
+        }
+      }
+    } catch (error) {
+      logError('Stream preload failed', error as Error, { 
+        title: song.title, 
+        url: song.url 
+      });
+    } finally {
+      this.preloadingUrls.delete(song.url);
+    }
+  }
+
+  // Enhanced getStreamUrl with caching
+  private async getStreamUrlWithCache(song: QueuedSong): Promise<string> {
+    // Check cache first
+    const cachedUrl = this.getCachedStreamUrl(song.url);
+    if (cachedUrl) {
+      return cachedUrl;
+    }
+
+    // Get from service
+    const youtubeService = this.multiSourceManager.getService('youtube') as any;
+    if (youtubeService?.getStreamUrl) {
+      const streamUrl = await youtubeService.getStreamUrl(song);
+      if (streamUrl) {
+        this.setCachedStreamUrl(song.url, streamUrl);
+        return streamUrl;
+      }
+    }
+
+    throw new Error('Failed to get stream URL');
   }
 }

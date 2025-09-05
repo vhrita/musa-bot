@@ -267,7 +267,7 @@ app.all('/proxy-stream', async (req, res) => {
       method: axiosMethod,
       url: decodedUrl,
       responseType: isHeadRequest ? 'text' : 'stream',
-      timeout: 15000,
+      timeout: isHeadRequest ? 15000 : 0, // No timeout for streaming, 15s for HEAD
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
       }
@@ -535,7 +535,7 @@ function getStreamUrl(videoUrl) {
       '--get-url',
       '--format', 'bestaudio[ext=m4a]/bestaudio/best',
       '--no-playlist',
-      '--socket-timeout', '30',  // Add socket timeout for stream
+      '--socket-timeout', '90',  // Increased timeout for stream resolution
       ...getCookieArgs(),  // Add cookies if available
       videoUrl
     ];
