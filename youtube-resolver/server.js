@@ -440,6 +440,7 @@ function getStreamUrl(videoUrl) {
       '--get-url',
       '--format', 'bestaudio[ext=m4a]/bestaudio/best',
       '--no-playlist',
+      '--socket-timeout', '30',  // Add socket timeout for stream
       ...getCookieArgs(),  // Add cookies if available
       videoUrl
     ];
@@ -449,6 +450,14 @@ function getStreamUrl(videoUrl) {
     const ytDlp = spawn('yt-dlp', ytDlpArgs);
     let output = '';
     let errorOutput = '';
+    let isTimedOut = false;
+
+    // Add timeout for stream resolution - Raspberry Pi needs more time
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      ytDlp.kill('SIGKILL');
+      logger.warn('yt-dlp stream timed out', { videoUrl, timeout: 90000 });
+    }, 90000);  // 90 seconds for stream resolution
 
     ytDlp.stdout.on('data', (data) => {
       output += data.toString();
@@ -459,6 +468,13 @@ function getStreamUrl(videoUrl) {
     });
 
     ytDlp.on('close', (code) => {
+      clearTimeout(timeoutId);
+      
+      if (isTimedOut) {
+        reject(new Error('Stream resolution timed out after 90 seconds'));
+        return;
+      }
+
       if (code !== 0) {
         logger.error('yt-dlp stream failed', { exitCode: code, error: errorOutput });
         reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));

@@ -210,10 +210,12 @@ export class ResolverYouTubeService extends BaseMusicService {
     });
   }
 
-  async getStreamUrl(url: string): Promise<string | null> {
+  async getStreamUrl(source: MusicSource): Promise<string | null> {
     if (!this.isEnabled()) {
       return null;
     }
+
+    const url = source.url; // Extract URL from MusicSource object
 
     // First, try the resolver if available
     try {
@@ -246,7 +248,7 @@ export class ResolverYouTubeService extends BaseMusicService {
     const response = await axios.post(`${this.resolverUrl}/stream`, {
       url
     }, {
-      timeout: 60000 // 60 seconds timeout
+      timeout: 120000 // Increased to 120 seconds for Raspberry Pi stream resolution
     });
 
     const streamUrl = response.data.streamUrl;
@@ -276,13 +278,28 @@ export class ResolverYouTubeService extends BaseMusicService {
         url
       ];
 
-      // Add cookies if available
+      // Add cookies if available and accessible
       const cookiePath = process.env.YTDLP_COOKIES;
       if (cookiePath) {
         const fs = require('fs');
-        if (fs.existsSync(cookiePath)) {
-          ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
+        try {
+          if (fs.existsSync(cookiePath)) {
+            // Test if file is readable before adding to args
+            fs.accessSync(cookiePath, fs.constants.R_OK);
+            ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
+            logEvent('resolver_ytdlp_stream_cookies_added', { cookiePath, url });
+          } else {
+            logEvent('resolver_ytdlp_stream_cookies_not_found', { cookiePath, url });
+          }
+        } catch (error) {
+          logEvent('resolver_ytdlp_stream_cookies_error', { 
+            cookiePath, 
+            url, 
+            error: (error as Error).message 
+          });
         }
+      } else {
+        logEvent('resolver_ytdlp_stream_no_cookies', { url });
       }
 
       logEvent('resolver_youtube_ytdlp_stream_command', {
@@ -293,9 +310,16 @@ export class ResolverYouTubeService extends BaseMusicService {
       });
 
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
-
       let output = '';
       let errorOutput = '';
+      let isTimedOut = false;
+
+      // Add timeout for direct yt-dlp stream as well
+      const timeoutId = setTimeout(() => {
+        isTimedOut = true;
+        ytDlp.kill('SIGKILL');
+        logEvent('resolver_ytdlp_stream_timeout', { url, timeout: 90000 });
+      }, 90000);
 
       ytDlp.stdout.on('data', (data) => {
         output += data.toString();
@@ -306,6 +330,14 @@ export class ResolverYouTubeService extends BaseMusicService {
       });
 
       ytDlp.on('close', (code) => {
+        clearTimeout(timeoutId);
+        
+        if (isTimedOut) {
+          logEvent('resolver_ytdlp_stream_timed_out', { url });
+          resolve(null);
+          return;
+        }
+
         if (code !== 0) {
           logError('Direct yt-dlp stream failed', new Error(errorOutput), {
             url,
