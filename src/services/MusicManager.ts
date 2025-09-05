@@ -538,35 +538,42 @@ export class MusicManager {
   }
 
   private async createRadioResource(url: string) {
-    logEvent('ffmpeg_process_starting', {
-      url,
-      command: 'ffmpeg',
-      args: ['-i', url, '-f', 's16le', '-ar', '48000', '-ac', '2', '-']
-    });
+    logEvent('creating_radio_resource', { url });
 
-    // For radio streams, create using ffmpeg to ensure compatibility
-    const ffmpegProcess = spawn('ffmpeg', [
+    // Enhanced FFmpeg arguments with aggressive buffering for streaming stability
+    const ffmpegArgs = [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1', 
+      '-reconnect_delay_max', '5',
+      '-rw_timeout', '30000000', // 30 second timeout (30M microseconds)
+      '-analyzeduration', '2M',
+      '-probesize', '5M',
+      '-f', 'mp3',
       '-i', url,
-      '-f', 's16le',     // PCM signed 16-bit little-endian
+      '-bufsize', '2M', // 2MB buffer
+      '-flush_packets', '0', // Don't flush packets immediately
+      '-max_delay', '5000000', // 5 second max delay
+      '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
-      '-'
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe']
+      'pipe:1'
+    ];
+
+    logEvent('ffmpeg_command', {
+      url,
+      command: 'ffmpeg',
+      args: ffmpegArgs
     });
 
-    // Log ffmpeg errors
-    if (ffmpegProcess.stderr) {
-      ffmpegProcess.stderr.on('data', (data: Buffer) => {
-        logEvent('ffmpeg_stderr', {
-          url,
-          data: data.toString()
-        });
-      });
-    }
+    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
 
     ffmpegProcess.on('error', (error: Error) => {
-      logError('FFmpeg process error', error, { url });
+      logError('FFmpeg process error', error, {
+        url,
+        pid: ffmpegProcess.pid
+      });
     });
 
     ffmpegProcess.on('exit', (code: number | null) => {
@@ -585,10 +592,13 @@ export class MusicManager {
       pid: ffmpegProcess.pid
     });
 
-    // Create audio resource from ffmpeg output
+    // Create audio resource from ffmpeg output with increased buffer
     const resource = createAudioResource(ffmpegProcess.stdout, {
       inputType: StreamType.Raw,
-      inlineVolume: true
+      inlineVolume: true,
+      metadata: {
+        title: 'Stream'
+      }
     });
 
     logEvent('audio_resource_created', {
