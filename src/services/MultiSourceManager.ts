@@ -104,13 +104,43 @@ export class MultiSourceManager {
       const allResults = await Promise.all(searchPromises);
       const combinedResults = allResults.flat();
 
+      // Filter out non-video YouTube entries (channels/playlists)
+      const isYouTubeVideoUrl = (u: string): boolean => {
+        try {
+          const url = new URL(u);
+          const host = url.hostname.toLowerCase();
+          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+          if (!isYt) return false;
+          if (host === 'youtu.be') {
+            const id = url.pathname.replace(/^\//, '');
+            return !!(id && id.length === 11);
+          }
+          if (url.pathname === '/watch') {
+            const v = url.searchParams.get('v');
+            return !!(v && v.length === 11);
+          }
+          if (url.pathname.startsWith('/shorts/')) {
+            const id = url.pathname.split('/')[2] || '';
+            return id.length === 11;
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      };
+
+      const filteredResults = combinedResults.filter(r => {
+        if (r.service !== 'youtube') return true;
+        return typeof r.url === 'string' && isYouTubeVideoUrl(r.url);
+      });
+
       // Sort results by service priority and add diversity
-      const sortedResults = this.sortAndDiversifyResults(combinedResults);
+      const sortedResults = this.sortAndDiversifyResults(filteredResults);
 
       logEvent('multi_source_search_completed', {
         query,
         totalResults: sortedResults.length,
-        resultsByService: this.getResultsCountByService(combinedResults)
+        resultsByService: this.getResultsCountByService(filteredResults)
       });
 
       return sortedResults;

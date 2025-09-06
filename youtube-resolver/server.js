@@ -369,6 +369,37 @@ app.post('/search', rateLimitByIp, async (req, res) => {
       results = await searchYouTube(query, maxResults);
     }
     
+    // Final defense: filter out non-video YouTube URLs from results
+    const isVideoUrl = (u) => {
+      try {
+        const url = new URL(u);
+        const host = url.hostname.toLowerCase();
+        const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+        if (!isYt) return true; // Non-YouTube entries untouched here
+        if (host === 'youtu.be') {
+          const id = url.pathname.replace(/^\//, '');
+          return id && id.length === 11;
+        }
+        if (url.pathname === '/watch') {
+          const v = url.searchParams.get('v');
+          return !!(v && v.length === 11);
+        }
+        if (url.pathname.startsWith('/shorts/')) {
+          const id = url.pathname.split('/')[2] || '';
+          return id.length === 11;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    };
+    const preCount = results.length;
+    results = results.filter(r => (r.service !== 'youtube') || isVideoUrl(r.url));
+    const filteredOut = preCount - results.length;
+    if (filteredOut > 0) {
+      logger.info('Filtered non-video results from search', { query, preCount, filteredOut, finalCount: results.length });
+    }
+
     // Cache the results
     setCachedResult(query, maxResults, results);
     
@@ -988,7 +1019,7 @@ function searchYouTubeQuick(query, maxResults) {
           const videoData = JSON.parse(line);
           
           if (videoData?.id && videoData?.title) {
-            const candidateUrl = videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
             if (!isVideoUrl(candidateUrl)) {
               // Skip channels/playlists or non-video entries
               continue;
@@ -1114,7 +1145,7 @@ function searchYouTube(query, maxResults) {
           const videoData = JSON.parse(line);
           
           if (videoData?.id && videoData?.title) {
-            const candidateUrl = videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
             if (!isVideoUrl(candidateUrl)) {
               // Skip channels/playlists or non-video entries
               continue;
