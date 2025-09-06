@@ -4,13 +4,20 @@ const { spawn } = require('child_process');
 const winston = require('winston');
 const axios = require('axios');
 
+// Force garbage collection for Pi 3 memory management
+if (global.gc) {
+  setInterval(() => {
+    global.gc();
+  }, 30000); // Every 30 seconds
+}
+
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Simple in-memory cache for search results
+// Ultra-minimal cache for Pi 3
 const searchCache = new Map();
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
-const MAX_CACHE_SIZE = 100; // Maximum cache entries
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes (reduced)
+const MAX_CACHE_SIZE = 20; // Reduced cache for Pi 3
 
 // Rate limiting and circuit breaker
 const activeCalls = new Map(); // Track active calls by URL
@@ -403,27 +410,28 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       url: decodedUrl,
       responseType: isHeadRequest ? 'text' : 'stream',
       timeout: isHeadRequest ? 15000 : 0, // No timeout for streaming, 15s for HEAD
-      maxRedirects: 5,
+      maxRedirects: 3, // Reduced
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-        'Connection': 'keep-alive',
-        'Keep-Alive': 'timeout=600',
-        'Accept': 'audio/mp4,audio/*,*/*',
-        'Accept-Encoding': 'identity'
+        'User-Agent': 'Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36',
+        'Connection': 'close', // Force close connections for Pi 3
+        'Accept': 'audio/mp4',
+        'Accept-Encoding': 'identity',
+        'Cache-Control': 'no-cache'
       },
-      // Better connection handling for streaming
+      // Ultra-conservative for Pi 3 - no persistent connections
       httpsAgent: require('https').Agent({
-        keepAlive: true,
-        keepAliveMsecs: 30000,
-        maxSockets: 5,
-        timeout: 600000 // 10 minutes
+        keepAlive: false, // Disable keepalive to save memory
+        maxSockets: 1,
+        timeout: 180000 // 3 minutes max
       }),
       httpAgent: require('http').Agent({
-        keepAlive: true,
-        keepAliveMsecs: 30000,
-        maxSockets: 5,
-        timeout: 600000 // 10 minutes
-      })
+        keepAlive: false,
+        maxSockets: 1,
+        timeout: 180000
+      }),
+      // Memory optimization
+      maxContentLength: 50 * 1024 * 1024, // 50MB max
+      maxBodyLength: 50 * 1024 * 1024
     };
 
     // Add range header for partial content requests
@@ -433,14 +441,11 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
 
     const response = await axios(axiosConfig);
 
-    // Set response headers for better streaming
+    // Ultra-minimalist headers for Pi 3
     res.set({
       'Content-Type': response.headers['content-type'] || 'audio/mp4',
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-cache, no-store',
-      'Connection': 'keep-alive',
-      'Keep-Alive': 'timeout=600, max=100',
-      'Transfer-Encoding': 'chunked'
+      'Connection': 'close', // Force close to free memory
+      'Cache-Control': 'no-store'
     });
 
     // Copy important headers from YouTube
@@ -461,7 +466,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       return res.end();
     }
 
-    // For GET requests, pipe the stream
+    // Ultra-simple streaming for Pi 3 - no heartbeat, direct pipe
     response.data.pipe(res);
 
     let streamEnded = false;
@@ -474,13 +479,10 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         logger.error('Stream proxy error', { 
           error: error.message, 
           code: error.code,
-          url: decodedUrl,
-          clientConnected: !req.destroyed
+          url: decodedUrl
         });
         if (!res.headersSent) {
           res.status(500).json({ error: 'Stream proxy failed' });
-        } else {
-          res.destroy();
         }
       }
     });
@@ -507,11 +509,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       if (!streamEnded) {
         streamEnded = true;
         recordCallComplete(decodedUrl);
-        logger.warn('Client disconnected from stream', { 
-          url: decodedUrl,
-          userAgent: req.headers['user-agent'],
-          duration: Date.now() - new Date().getTime()
-        });
+        logger.warn('Client disconnected from stream', { url: decodedUrl });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
         }
@@ -522,11 +520,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       if (!streamEnded) {
         streamEnded = true;
         recordCallComplete(decodedUrl);
-        logger.warn('Client aborted stream', { 
-          url: decodedUrl,
-          userAgent: req.headers['user-agent'],
-          reason: 'client_abort'
-        });
+        logger.warn('Client aborted stream', { url: decodedUrl });
         if (response.data && typeof response.data.destroy === 'function') {
           response.data.destroy();
         }
@@ -537,27 +531,14 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
     recordFailure();
     recordCallComplete(decodedUrl);
     
-    const errorDetails = {
+    logger.error('Stream proxy failed', {
       url: decodedUrl, 
       error: error.message, 
-      code: error.code,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      isTimeout: error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT',
-      isNetworkError: error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED'
-    };
-    
-    logger.error('Stream proxy failed', errorDetails);
+      code: error.code
+    });
     
     if (!res.headersSent) {
-      const statusCode = error.response?.status || (errorDetails.isTimeout ? 408 : 500);
-      res.status(statusCode).json({ 
-        error: 'Stream proxy failed', 
-        message: error.message,
-        code: error.code
-      });
-    } else {
-      res.destroy();
+      res.status(500).json({ error: 'Stream proxy failed' });
     }
   } finally {
     // Process next queued request for this URL

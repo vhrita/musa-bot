@@ -1,39 +1,41 @@
 FROM node:lts-alpine
 
-WORKDIR /app
-
-# Dependências mínimas + yt-dlp do repositório Alpine
+# Install dependencies optimized for Pi 3
 RUN apk add --no-cache \
     python3 \
     ffmpeg \
-    curl \
-    ca-certificates \
-    yt-dlp
+    && rm -rf /var/cache/apk/*
 
-# Variáveis úteis
-ENV YTDLP_COOKIES_PATH=/data/cookies/cookies.txt \
-    YTDLP_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36" \
-    NODE_ENV=production
+WORKDIR /app
 
-# Instala deps Node
+# Copy package files
 COPY package*.json ./
-RUN npm ci --omit=dev
 
-# Código
+# Install with minimal dependencies
+RUN npm ci --omit=dev --no-audit --no-fund
+
+# Copy application files
 COPY . .
 
-# Pasta de logs e cookies; symlink p/ compat com 'cookies/cookies.txt'
+# Create necessary directories
 RUN mkdir -p logs /data/cookies /tmp \
- && ln -s /data/cookies /app/cookies || true \
- && chmod 777 /tmp
+  && ln -s /data/cookies /app/cookies \
+  && chmod 755 /app
 
-# Usuário não-root
-RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001 -G nodejs
 USER nodejs
 
+# Expose port
 EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://localhost:3001/health || exit 1
+# Set memory limits for Pi 3
+ENV NODE_OPTIONS="--max-old-space-size=512 --gc-interval=100 --expose-gc"
+ENV UV_THREADPOOL_SIZE=2
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
+
+# Start the application
 CMD ["node", "server.js"]
