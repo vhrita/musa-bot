@@ -29,14 +29,14 @@ export class MultiSourceManager {
     ];
 
     // Choose YouTube service based on environment
-    if (process.env.RESOLVER_URL) {
+    if (botConfig.resolverUrl) {
       // Use resolver if available
       services.push(new ResolverYouTubeService(
         botConfig.services.youtube.priority,
         botConfig.services.youtube.enabled
       ));
       logEvent('resolver_youtube_service_initialized', {
-        resolverUrl: process.env.RESOLVER_URL,
+        resolverUrl: botConfig.resolverUrl,
         priority: botConfig.services.youtube.priority,
         enabled: botConfig.services.youtube.enabled
       });

@@ -2,6 +2,7 @@ import { BaseMusicService } from './BaseMusicService';
 import { MusicSource, ServiceType } from '../types/music';
 import { logEvent, logError } from '../utils/logger';
 import axios from 'axios';
+import { botConfig } from '../config';
 import { spawn } from 'child_process';
 
 export class ResolverYouTubeService extends BaseMusicService {
@@ -9,7 +10,7 @@ export class ResolverYouTubeService extends BaseMusicService {
 
   constructor(priority: number = 1, enabled: boolean = true) {
     super('youtube', priority, enabled);
-    this.resolverUrl = process.env.RESOLVER_URL || 'http://localhost:3001';
+    this.resolverUrl = botConfig.resolverUrl || 'http://localhost:3001';
   }
 
   async search(query: string, maxResults: number): Promise<MusicSource[]> {
@@ -93,7 +94,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       ];
 
       // Only add cookies if file exists and is readable (avoid permission errors)
-      const cookiePath = process.env.YTDLP_COOKIES;
+      const cookiePath = botConfig.ytdlpCookies;
       if (cookiePath) {
         const fs = require('fs');
         try {
@@ -281,7 +282,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       ];
 
       // Add cookies if available and accessible
-      const cookiePath = process.env.YTDLP_COOKIES;
+      const cookiePath = botConfig.ytdlpCookies;
       if (cookiePath) {
         const fs = require('fs');
         try {

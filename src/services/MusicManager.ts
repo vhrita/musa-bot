@@ -29,14 +29,20 @@ export class MusicManager {
   private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded
   private readonly activeStreams = new Set<string>(); // Track active streaming URLs
   private readonly prefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private cacheCleanupInterval?: ReturnType<typeof setInterval>;
 
   constructor() {
     this.multiSourceManager = new MultiSourceManager();
     
-    // Clean up expired cache entries every 5 minutes
-    setInterval(() => {
-      this.cleanupStreamCache();
-    }, 5 * 60 * 1000);
+    // Clean up expired cache entries every 5 minutes (skip in tests)
+    if (process.env.NODE_ENV !== 'test') {
+      this.cacheCleanupInterval = setInterval(() => {
+        this.cleanupStreamCache();
+      }, 5 * 60 * 1000);
+      // Do not keep the event loop alive solely for this timer
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (this.cacheCleanupInterval as any)?.unref?.();
+    }
   }
 
   async joinVoiceChannel(channel: VoiceChannel): Promise<VoiceConnection | null> {
@@ -227,7 +233,7 @@ export class MusicManager {
       if (song.service === 'radio' || song.service === 'internet_archive') {
         resource = await this.createRadioResource(song.url);
       } else if (song.service === 'youtube') {
-        resource = await this.createYouTubeStreamResource(song);
+        resource = await this.createYouTubeStreamResource(guildId, song);
       } else {
         resource = createAudioResource(song.url, {
           inlineVolume: true,
@@ -429,6 +435,7 @@ export class MusicManager {
 
   // Schedules a prefetch pass for this guild (debounced)
   private schedulePrefetch(guildId: string, delayMs: number = 250): void {
+    if (process.env.NODE_ENV === 'test') return;
     if (!botConfig.music.prefetchEnabled) return;
     const existing = this.prefetchTimers.get(guildId);
     if (existing) clearTimeout(existing);
@@ -437,6 +444,9 @@ export class MusicManager {
       void this.prefetchUpcoming(guildId);
     }, delayMs);
     this.prefetchTimers.set(guildId, timer);
+    // Do not keep the event loop alive solely for this timer
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (timer as any)?.unref?.();
   }
 
   // Prefetch stream URLs for upcoming songs
@@ -507,10 +517,14 @@ export class MusicManager {
     this.cancelInactivityTimer(guildId);
     
     const guildData = this.getGuildData(guildId);
-    guildData.inactivityTimer = setTimeout(() => {
+    const t = setTimeout(() => {
       logEvent('inactivity_timeout', { guildId });
       void this.leaveVoiceChannel(guildId);
     }, botConfig.music.inactivityTimeout);
+    // Do not hold the event loop open for this timer
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (t as any)?.unref?.();
+    guildData.inactivityTimer = t;
 
     logEvent('inactivity_timer_started', { 
       guildId, 
@@ -531,10 +545,14 @@ export class MusicManager {
     this.cancelEmptyChannelTimer(guildId);
     
     const guildData = this.getGuildData(guildId);
-    guildData.emptyChannelTimer = setTimeout(() => {
+    const t = setTimeout(() => {
       logEvent('empty_channel_timeout', { guildId });
       void this.leaveVoiceChannel(guildId);
     }, botConfig.music.emptyChannelTimeout);
+    // Do not hold the event loop open for this timer
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (t as any)?.unref?.();
+    guildData.emptyChannelTimer = t;
 
     logEvent('empty_channel_timer_started', { 
       guildId, 
@@ -580,7 +598,7 @@ export class MusicManager {
     return connection?.state.status === VoiceConnectionStatus.Ready;
   }
 
-  private async createYouTubeStreamResource(song: QueuedSong) {
+  private async createYouTubeStreamResource(guildId: string, song: QueuedSong) {
     // Mark as active stream to prevent conflicts
     this.activeStreams.add(song.url);
     
@@ -603,7 +621,7 @@ export class MusicManager {
       
       if (streamUrl) {
         // Use FFmpeg for YouTube streams with retry logic
-        return await this.createYouTubeResource(streamUrl, song.title);
+        return await this.createYouTubeResource(streamUrl, song.title, { guildId, songUrl: song.url });
       } else {
         throw new Error('Failed to get YouTube stream URL');
       }
@@ -617,7 +635,7 @@ export class MusicManager {
       try {
         const directStreamUrl = await this.getDirectStreamUrl(song);
         if (directStreamUrl) {
-          return await this.createYouTubeResource(directStreamUrl, song.title);
+          return await this.createYouTubeResource(directStreamUrl, song.title, { guildId, songUrl: song.url });
         } else {
           throw new Error('All YouTube streaming methods failed');
         }
@@ -660,8 +678,9 @@ export class MusicManager {
     return null;
   }
 
-  private async createYouTubeResource(streamUrl: string, title: string) {
-    logEvent('creating_youtube_resource', { streamUrl, title });
+  private async createYouTubeResource(streamUrl: string, title: string, ctx?: { guildId?: string; songUrl?: string }) {
+    const meta = this.sanitizeStreamMeta(streamUrl);
+    logEvent('creating_youtube_resource', { title, ...meta, ...(ctx || {}) });
 
     // Simplified FFmpeg arguments without aggressive reconnection that causes multiple simultaneous requests
     const ffmpegArgs = [
@@ -675,16 +694,35 @@ export class MusicManager {
       'pipe:1'
     ];
 
+    const sanitizedArgs = ffmpegArgs.map(arg => {
+      if (typeof arg === 'string' && (arg.startsWith('http://') || arg.startsWith('https://'))) {
+        return '[REDACTED_URL]';
+      }
+      return arg;
+    });
     logEvent('youtube_ffmpeg_command', {
-      streamUrl,
       title,
       command: 'ffmpeg',
-      args: ffmpegArgs
+      args: sanitizedArgs,
+      ...meta,
+      ...(ctx || {})
     });
 
     const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
       stdio: ['ignore', 'pipe', 'pipe'] // Capture stderr for debugging
     });
+
+    // Helper to safely terminate FFmpeg to avoid lingering processes
+    let ffmpegExited = false;
+    const killFfmpeg = (reason: string) => {
+      if (ffmpegExited) return;
+      try {
+        ffmpegProcess.kill('SIGKILL');
+        logEvent('youtube_ffmpeg_killed', { title, reason, ...meta, ...(ctx || {}) });
+      } catch {
+        // ignore
+      }
+    };
 
     // Log FFmpeg errors to understand what's happening
     if (ffmpegProcess.stderr) {
@@ -692,8 +730,9 @@ export class MusicManager {
         const errorMsg = data.toString();
         if (errorMsg.includes('HTTP error') || errorMsg.includes('Server returned')) {
           logError('FFmpeg HTTP error', new Error(errorMsg), {
-            streamUrl,
-            title
+            title,
+            ...meta,
+            ...(ctx || {})
           });
         }
       });
@@ -701,17 +740,20 @@ export class MusicManager {
 
     ffmpegProcess.on('error', (error: Error) => {
       logError('YouTube FFmpeg process error', error, {
-        streamUrl,
         title,
-        pid: ffmpegProcess.pid
+        pid: ffmpegProcess.pid,
+        ...meta,
+        ...(ctx || {})
       });
     });
 
     ffmpegProcess.on('exit', (code: number | null) => {
+      ffmpegExited = true;
       logEvent('youtube_ffmpeg_process_exit', {
-        streamUrl,
         title,
-        exitCode: code
+        exitCode: code,
+        ...meta,
+        ...(ctx || {})
       });
     });
 
@@ -720,9 +762,10 @@ export class MusicManager {
     }
 
     logEvent('youtube_ffmpeg_process_created', {
-      streamUrl,
       title,
-      pid: ffmpegProcess.pid
+      pid: ffmpegProcess.pid,
+      ...meta,
+      ...(ctx || {})
     });
 
     // Create audio resource from ffmpeg output
@@ -735,10 +778,18 @@ export class MusicManager {
     });
 
     logEvent('youtube_audio_resource_created', {
-      streamUrl,
       title,
-      type: 'pcm_stream'
+      type: 'pcm_stream',
+      ...meta,
+      ...(ctx || {})
     });
+
+    // Ensure FFmpeg is terminated if the player/stream finishes or is stopped
+    if (resource.playStream && typeof (resource.playStream as any).once === 'function') {
+      (resource.playStream as any).once('close', () => killFfmpeg('play_stream_closed'));
+      (resource.playStream as any).once('end', () => killFfmpeg('play_stream_ended'));
+      (resource.playStream as any).once('error', () => killFfmpeg('play_stream_error'));
+    }
 
     return resource;
   }
@@ -757,7 +808,8 @@ export class MusicManager {
   }
 
   private async createRadioResource(url: string) {
-    logEvent('creating_radio_resource', { url });
+    const meta = this.sanitizeStreamMeta(url);
+    logEvent('creating_radio_resource', { ...meta });
 
     // Enhanced FFmpeg arguments with aggressive buffering for streaming stability
     const ffmpegArgs = [
@@ -778,38 +830,46 @@ export class MusicManager {
       'pipe:1'
     ];
 
+    const sanitizedArgs = ffmpegArgs.map(arg => {
+      if (typeof arg === 'string' && (arg.startsWith('http://') || arg.startsWith('https://'))) {
+        return '[REDACTED_URL]';
+      }
+      return arg;
+    });
     logEvent('ffmpeg_command', {
-      url,
       command: 'ffmpeg',
-      args: ffmpegArgs
+      args: sanitizedArgs,
+      ...meta
     });
 
     const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
       stdio: ['ignore', 'pipe', 'ignore']
     });
 
+    // Helper to safely terminate FFmpeg
+    let ffmpegExited = false;
+    const killFfmpeg = (reason: string) => {
+      if (ffmpegExited) return;
+      try {
+        ffmpegProcess.kill('SIGKILL');
+        logEvent('radio_ffmpeg_killed', { reason, ...meta });
+      } catch { /* ignore */ }
+    };
+
     ffmpegProcess.on('error', (error: Error) => {
-      logError('FFmpeg process error', error, {
-        url,
-        pid: ffmpegProcess.pid
-      });
+      logError('FFmpeg process error', error, { pid: ffmpegProcess.pid, ...meta });
     });
 
     ffmpegProcess.on('exit', (code: number | null) => {
-      logEvent('ffmpeg_process_exit', {
-        url,
-        exitCode: code
-      });
+      ffmpegExited = true;
+      logEvent('ffmpeg_process_exit', { exitCode: code, ...meta });
     });
 
     if (!ffmpegProcess.stdout) {
       throw new Error('Failed to create ffmpeg process stdout');
     }
 
-    logEvent('ffmpeg_process_created', {
-      url,
-      pid: ffmpegProcess.pid
-    });
+    logEvent('ffmpeg_process_created', { pid: ffmpegProcess.pid, ...meta });
 
     // Create audio resource from ffmpeg output with increased buffer
     const resource = createAudioResource(ffmpegProcess.stdout, {
@@ -820,10 +880,14 @@ export class MusicManager {
       }
     });
 
-    logEvent('audio_resource_created', {
-      url,
-      type: 'pcm_stream'
-    });
+    logEvent('audio_resource_created', { type: 'pcm_stream', ...meta });
+
+    // Ensure FFmpeg is terminated if the player/stream finishes or is stopped
+    if (resource.playStream && typeof (resource.playStream as any).once === 'function') {
+      (resource.playStream as any).once('close', () => killFfmpeg('radio_play_stream_closed'));
+      (resource.playStream as any).once('end', () => killFfmpeg('radio_play_stream_ended'));
+      (resource.playStream as any).once('error', () => killFfmpeg('radio_play_stream_error'));
+    }
 
     return resource;
   }
@@ -853,7 +917,8 @@ export class MusicManager {
       url: streamUrl,
       timestamp: Date.now()
     });
-    logEvent('stream_cache_set', { songUrl, streamUrl });
+    const meta = this.sanitizeStreamMeta(streamUrl);
+    logEvent('stream_cache_set', { songUrl, ...meta });
   }
 
   // (Old disabled preload code removed and replaced by prefetchUpcoming/preloadStreamUrl)
@@ -877,5 +942,23 @@ export class MusicManager {
     }
 
     throw new Error('Failed to get stream URL');
+  }
+
+  // Redact stream URL for logs (avoid leaking query/signatures)
+  private sanitizeStreamMeta(url: string): { streamHost: string; streamPath: string; expire?: number } {
+    try {
+      const u = new URL(url);
+      const expire = u.searchParams.get('expire');
+      const meta: { streamHost: string; streamPath: string; expire?: number } = {
+        streamHost: u.host,
+        streamPath: u.pathname
+      };
+      if (expire && !Number.isNaN(Number(expire))) {
+        meta.expire = Number(expire);
+      }
+      return meta;
+    } catch {
+      return { streamHost: 'invalid', streamPath: '' };
+    }
   }
 }

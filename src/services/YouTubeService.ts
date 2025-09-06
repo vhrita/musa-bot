@@ -2,6 +2,7 @@ import { BaseMusicService } from './BaseMusicService';
 import { MusicSource, ServiceType } from '../types/music';
 import { logEvent, logError } from '../utils/logger';
 import { spawn } from 'child_process';
+import { botConfig } from '../config';
 
 export class YouTubeService extends BaseMusicService {
   constructor(priority: number, enabled: boolean) {
@@ -50,9 +51,9 @@ export class YouTubeService extends BaseMusicService {
         ];
 
       // Add cookies if configured
-      if (process.env.YTDLP_COOKIES) {
+      if (botConfig.ytdlpCookies) {
         const fs = require('fs');
-        const cookiePath = process.env.YTDLP_COOKIES;
+        const cookiePath = botConfig.ytdlpCookies;
         
         logEvent('youtube_cookies_check', {
           cookiePath,
@@ -210,9 +211,9 @@ export class YouTubeService extends BaseMusicService {
         ];
 
         // Add cookies if configured
-        if (process.env.YTDLP_COOKIES) {
+        if (botConfig.ytdlpCookies) {
           const fs = require('fs');
-          const cookiePath = process.env.YTDLP_COOKIES;
+          const cookiePath = botConfig.ytdlpCookies;
           
           try {
             if (fs.existsSync(cookiePath)) {
@@ -250,7 +251,7 @@ export class YouTubeService extends BaseMusicService {
         }
 
         // Add proxy if configured
-        const proxy = process.env.YTDLP_PROXY;
+        const proxy = botConfig.ytdlpProxy;
         if (proxy) {
           ytDlpArgs.push('--proxy', proxy);
         }
