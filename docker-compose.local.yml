@@ -15,6 +15,11 @@ services:
     environment:
       - NODE_ENV=development
       - YTDLP_COOKIES_PATH=/data/cookies/cookies.txt
+      # Security (optional)
+      # - ALLOWED_ORIGINS=http://localhost:3000
+      # - ALLOWED_DEST_SCHEMES=https
+      # - ALLOWED_DEST_HOST_SUFFIXES=googlevideo.com
+      # - ALLOWED_DEST_CIDRS=173.194.0.0/16,74.125.0.0/16
     networks:
       - musa-network
     healthcheck:

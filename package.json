@@ -10,7 +10,7 @@
     "deploy": "tsx src/deploy-commands.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "test": "jest",
+    "test": "npm run build && jest --runInBand",
     "clean": "rm -rf dist"
   },
   "keywords": [
@@ -32,7 +32,8 @@
     "dotenv": "^16.4.1",
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "^0.7.15",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
