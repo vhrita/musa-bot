@@ -150,6 +150,15 @@ sudo systemctl start youtube-resolver
 }
 ```
 
+### **ALL /proxy-stream**
+Proxy do stream do YouTube (aceita GET e HEAD). Exemplo:
+
+```
+GET /proxy-stream?url={URL_GOOGLEVIDEO_ENCODED}
+```
+
+Validações de destino: esquemas, hosts e CIDRs permitidos (ver seção de Segurança & Configuração).
+
 ### **GET /health**
 ```json
 {
@@ -157,6 +166,101 @@ sudo systemctl start youtube-resolver
   "service": "youtube-resolver",
   "timestamp": "2025-09-02T03:25:00.000Z"
 }
+```
+
+## 🔐 Configuração segura por padrão (Option A)
+
+Sem configurar variáveis, o resolver já inicia com proteções razoáveis:
+
+- CORS desabilitado (não envia headers CORS) — acessos via navegador são bloqueados.
+- `/proxy-stream` aceita apenas `https` e hosts terminando em `googlevideo.com`.
+- Bloqueio de IPs privados/loopback/link-local por padrão (somente IPs públicos resolvidos via DNS são permitidos).
+
+Para uma UI específica, libere somente sua origem:
+
+```env
+ALLOWED_ORIGINS=https://seu-site.example.com
+```
+
+Para endurecer ainda mais, restrinja por CIDR (opcional):
+
+```env
+# Exemplo (ranges do Google; mantenha atualizado conforme necessário)
+ALLOWED_DEST_CIDRS=173.194.0.0/16,74.125.0.0/16,142.250.0.0/15,216.58.192.0/19
+```
+
+As chaves e explicações completas estão na seção “Segurança & Configuração via ENV”.
+
+## 🚦 Rate Limiting por IP
+
+O resolver aplica um limitador leve por IP (token bucket) aos endpoints `/search`, `/stream` e `/proxy-stream`.
+
+Ambiente:
+
+```env
+RATE_LIMIT_WINDOW_MS=60000   # Janela (ms)
+RATE_LIMIT_MAX=60            # Taxa média permitida por janela
+RATE_LIMIT_BURST=20          # Capacidade de burst por IP
+```
+
+Os valores podem ser ajustados para seu ambiente. Em caso de estouro, retorna `429 Too Many Requests`.
+
+## 🧰 Logging & NODE_ENV
+
+- `NODE_ENV=production` → logs no nível `info` por padrão.
+- Outras (dev/test) → `debug` por padrão.
+- URLs de stream (googlevideo) são sanitizadas em produção (mostram apenas host/path/expire). Fora de produção, os logs incluem `originalUrl` para facilitar debug via SSH.
+
+Tamanho/rotação de logs:
+
+```env
+LOG_MAX_SIZE_MB=5
+LOG_MAX_FILES=3
+```
+
+## 🧾 Validação de Entrada
+
+- JSON body limitado: `10kb`.
+- `/search`:
+  - `query`: string trimada, 1..200 chars
+  - `maxResults`: padrão 3, clamp 1..5
+  - `quickMode`: boolean, padrão `true` quando ausente
+- `/stream`:
+
+  - `url`: YouTube (`youtube.com`/`youtu.be`), 1..2048 chars
+  - `proxy`/`bypass`: booleanos aceitam `true/false`
+
+## ⚙️ Configuração via ENV (Resumo)
+
+```env
+# Server
+PORT=3001
+
+# CORS
+ALLOWED_ORIGINS=https://seu-site.example.com
+
+# Destino permitido no proxy
+ALLOWED_DEST_SCHEMES=https
+ALLOWED_DEST_HOST_SUFFIXES=googlevideo.com
+# Opcional: restringir por CIDR IPv4
+ALLOWED_DEST_CIDRS=173.194.0.0/16,74.125.0.0/16
+
+# Cookies
+# Caminho canônico (aceito pelo resolver e pelo bot):
+COOKIES_PATH=/cookies/cookies.txt
+# Alternativas específicas do resolver (se preferir):
+# YTDLP_COOKIES_PATH=/cookies/cookies.txt
+# QUICK_SEARCH_COOKIES=false
+
+# Rate limiting
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=60
+RATE_LIMIT_BURST=20
+
+# Logging e proxy
+LOG_MAX_SIZE_MB=5
+LOG_MAX_FILES=3
+TRUST_PROXY=false
 ```
 
 ## 🔄 **Integração com o Bot:**
@@ -207,6 +311,52 @@ curl http://localhost:3001/health
 - Use firewall para expor apenas porta 3001
 - Configure acesso apenas para IP da VPS
 - Mantenha o servidor resolver atualizado
+
+### Segurança & Configuração via ENV
+
+Variáveis de ambiente para CORS e validação de destino:
+
+```env
+# CORS: origens permitidas (se vazio, CORS desabilitado)
+ALLOWED_ORIGINS=https://seu-site.example.com
+
+# Esquemas de destino permitidos (padrão: https)
+ALLOWED_DEST_SCHEMES=https
+
+# Sufixos de host de destino permitidos (padrão: googlevideo.com)
+ALLOWED_DEST_HOST_SUFFIXES=googlevideo.com
+
+# Opcional: restringir IPs de destino a CIDRs IPv4 (se vazio, bloqueia IPs privados e permite públicos)
+ALLOWED_DEST_CIDRS=173.194.0.0/16,74.125.0.0/16
+```
+
+Notas:
+- O endpoint `/proxy-stream` aceita apenas `GET` e `HEAD`.
+- Se `ALLOWED_DEST_CIDRS` não for definido, IPs privados/loopback são bloqueados por padrão.
+- Suporte a CIDR IPv4; IPv6 pode ser adicionado posteriormente.
+
+### Exemplo com Docker Compose (local)
+
+```yaml
+services:
+  youtube-resolver:
+    build:
+      context: ./youtube-resolver
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./cookies:/data/cookies:ro
+      - ./youtube-resolver/logs:/app/logs
+    environment:
+      - NODE_ENV=development
+      - YTDLP_COOKIES_PATH=/data/cookies/cookies.txt
+      # Segurança (opcional)
+      # - ALLOWED_ORIGINS=http://localhost:3000
+      # - ALLOWED_DEST_SCHEMES=https
+      # - ALLOWED_DEST_HOST_SUFFIXES=googlevideo.com
+      # - ALLOWED_DEST_CIDRS=173.194.0.0/16,74.125.0.0/16
+```
 
 ```bash
 # Configurar iptables (exemplo)
