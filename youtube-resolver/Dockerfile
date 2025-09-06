@@ -2,8 +2,12 @@ FROM node:lts-alpine
 
 # Install dependencies optimized for Pi 3
 RUN apk add --no-cache \
-    python3 \
     ffmpeg \
+    py3-pip \
+    python3 \
+    && pip3 install --no-cache-dir yt-dlp \
+    && ln -s /usr/local/bin/yt-dlp /usr/bin/yt-dlp \
+    && yt-dlp --version \
     && rm -rf /var/cache/apk/*
 
 WORKDIR /app
