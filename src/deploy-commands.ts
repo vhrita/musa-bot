@@ -38,14 +38,14 @@ const rest = new REST().setToken(botConfig.token);
         // Register commands globally (takes up to 1 hour to update)
         // For development, use guild-specific registration (instant)
         
-        if (process.env.GUILD_ID) {
+        if (botConfig.guildId) {
             // Development: Register to specific guild (instant)
             const data = await rest.put(
-                Routes.applicationGuildCommands(botConfig.clientId, process.env.GUILD_ID),
+                Routes.applicationGuildCommands(botConfig.clientId, botConfig.guildId),
                 { body: commands },
             ) as any[];
 
-            console.log(`✅ Successfully reloaded ${data.length} guild (/) commands for guild ${process.env.GUILD_ID}.`);
+            console.log(`✅ Successfully reloaded ${data.length} guild (/) commands for guild ${botConfig.guildId}.`);
             console.log(`⚡ Guild commands appear immediately in Discord.`);
         } else {
             // Production: Register globally

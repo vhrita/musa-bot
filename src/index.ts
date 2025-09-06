@@ -137,13 +137,27 @@ const startBot = async () => {
 
 // Graceful shutdown
 const gracefulShutdown = (signal: string) => {
-    logger.info(`🎵 bot_shutdown_initiated`, { signal });
-    client.destroy();
-    process.exit(0);
+  logger.info(`🎵 bot_shutdown_initiated`, { signal });
+  client.destroy();
+  process.exit(0);
 };
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Catch-all error handlers for stability and observability
+process.on('unhandledRejection', (reason) => {
+  logger.error('🎵 unhandled_rejection', {
+    error: reason instanceof Error ? reason.message : String(reason)
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('🎵 uncaught_exception', {
+    error: err.message,
+    stack: err.stack
+  });
+});
 
 // Start the bot
 startBot();
