@@ -5,8 +5,7 @@ RUN apk add --no-cache \
     ffmpeg \
     py3-pip \
     python3 \
-    && pip3 install --no-cache-dir yt-dlp \
-    && ln -s /usr/local/bin/yt-dlp /usr/bin/yt-dlp \
+    && pip3 install --break-system-packages --no-cache-dir yt-dlp \
     && yt-dlp --version \
     && rm -rf /var/cache/apk/*
 
