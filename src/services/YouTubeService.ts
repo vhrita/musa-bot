@@ -146,6 +146,31 @@ export class YouTubeService extends BaseMusicService {
           const results: MusicSource[] = [];
           const lines = output.trim().split('\n').filter(line => line.trim());
 
+          // Helper: only accept direct YouTube video URLs (not channels/playlists)
+          const isVideoUrl = (u: string): boolean => {
+            try {
+              const url = new URL(u);
+              const host = url.hostname.toLowerCase();
+              const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+              if (!isYt) return false;
+              if (host === 'youtu.be') {
+                const id = url.pathname.replace(/^\//, '');
+                return !!(id && id.length === 11);
+              }
+              if (url.pathname === '/watch') {
+                const v = url.searchParams.get('v');
+                return !!(v && v.length === 11);
+              }
+              if (url.pathname.startsWith('/shorts/')) {
+                const id = url.pathname.split('/')[2] || '';
+                return id.length === 11;
+              }
+              return false;
+            } catch {
+              return false;
+            }
+          };
+
           for (const line of lines) {
             try {
               const video = JSON.parse(line);
@@ -154,10 +179,15 @@ export class YouTubeService extends BaseMusicService {
               if (!video.id || !video.title) {
                 continue;
               }
-              
+              const candidateUrl = (video.webpage_url as string) || `https://www.youtube.com/watch?v=${video.id}`;
+              // Filter out channels/playlists by URL pattern and video id length
+              if (!isVideoUrl(candidateUrl)) {
+                continue;
+              }
+
               results.push({
                 title: video.title || 'Unknown Title',
-                url: video.webpage_url || `https://www.youtube.com/watch?v=${video.id}`,
+                url: candidateUrl,
                 duration: video.duration || undefined,
                 creator: video.uploader || video.channel || undefined,
                 service: 'youtube' as ServiceType,

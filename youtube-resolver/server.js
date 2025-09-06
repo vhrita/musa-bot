@@ -185,7 +185,7 @@ function addToUrlQueue(url, req, res) {
         res.status(408).json({ error: 'Request timeout - too many concurrent requests' });
       }
     }
-  }, 30000); // 30 second timeout
+  }, 10000); // 10 second timeout
 }
 
 function processUrlQueue(url) {
@@ -196,9 +196,12 @@ function processUrlQueue(url) {
   
   if (canMakeCall(url)) {
     const { req, res } = queue.shift();
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.writableEnded) {
       // Continue processing this request
       handleProxyStreamRequest(req, res, url);
+    } else {
+      // Client already gone; skip
+      processUrlQueue(url);
     }
   }
 }
@@ -399,6 +402,36 @@ app.post('/stream', rateLimitByIp, async (req, res) => {
     return res.status(400).json({ error: 'Invalid URL format' });
   }
 
+  // Only allow direct video URLs (not channels/playlists) to avoid yt-dlp failures with --no-playlist
+  const isVideoUrl = (u) => {
+    try {
+      const url = new URL(u);
+      const host = url.hostname.toLowerCase();
+      const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+      if (!isYt) return false;
+      if (host === 'youtu.be') {
+        const id = url.pathname.replace(/^\//, '');
+        return id && id.length === 11;
+      }
+      if (url.pathname === '/watch') {
+        const v = url.searchParams.get('v');
+        return !!(v && v.length === 11);
+      }
+      if (url.pathname.startsWith('/shorts/')) {
+        const id = url.pathname.split('/')[2] || '';
+        return id.length === 11;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!isVideoUrl(videoUrl)) {
+    logger.warn('Rejected non-video YouTube URL for stream', { url: videoUrl });
+    return res.status(400).json({ error: 'URL must be a YouTube video (watch, shorts, or youtu.be)' });
+  }
+
   logger.info('Stream URL request', { url: videoUrl, proxy, bypass });
 
   try {
@@ -459,9 +492,39 @@ app.all('/proxy-stream', rateLimitByIp, async (req, res) => {
     return res.status(503).json({ error: 'Service temporarily unavailable' });
   }
 
+  // Serve HEAD requests without occupying the per-URL concurrency slot
+  if (req.method === 'HEAD') {
+    try {
+      logger.info('Proxying HEAD', { ...buildUrlLogMeta(decodedUrl), method: req.method });
+      const headResp = await axios({
+        method: 'HEAD',
+        url: decodedUrl,
+        timeout: 15000,
+        maxRedirects: 2,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36',
+          'Accept': 'audio/mp4',
+          'Accept-Encoding': 'identity',
+          'Cache-Control': 'no-cache',
+        },
+        httpsAgent: require('https').Agent({ keepAlive: false, maxSockets: 1, timeout: 0 }),
+        httpAgent: require('http').Agent({ keepAlive: false, maxSockets: 1, timeout: 0 }),
+      });
+      // Pass through key headers
+      if (headResp.headers['content-length']) res.set('Content-Length', headResp.headers['content-length']);
+      if (headResp.headers['content-type']) res.set('Content-Type', headResp.headers['content-type']);
+      if (headResp.headers['content-range']) res.set('Content-Range', headResp.headers['content-range']);
+      res.set('Connection', 'close');
+      return res.status(headResp.status === 206 ? 206 : 200).end();
+    } catch (e) {
+      logger.warn('HEAD proxy failed', { ...buildUrlLogMeta(decodedUrl), error: e.message });
+      return res.status(502).json({ error: 'HEAD upstream failed' });
+    }
+  }
+
   // Check rate limiting
   if (!canMakeCall(decodedUrl)) {
-    logger.warn('Rate limit exceeded, queueing request', { 
+    logger.warn('Per-URL concurrency limit reached, queueing request', { 
       ...buildUrlLogMeta(decodedUrl), 
       activeCalls: activeCalls.get(decodedUrl),
       queueSize: (urlQueues.get(decodedUrl) || []).length
@@ -893,6 +956,31 @@ function searchYouTubeQuick(query, maxResults) {
       const results = [];
       const lines = output.trim().split('\n');
 
+      // Helper: validate candidate is a YouTube VIDEO url (not channel/playlist)
+      const isVideoUrl = (u) => {
+        try {
+          const url = new URL(u);
+          const host = url.hostname.toLowerCase();
+          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+          if (!isYt) return false;
+          if (host === 'youtu.be') {
+            const id = url.pathname.replace(/^\//, '');
+            return id && id.length === 11;
+          }
+          if (url.pathname === '/watch') {
+            const v = url.searchParams.get('v');
+            return !!(v && v.length === 11);
+          }
+          if (url.pathname.startsWith('/shorts/')) {
+            const id = url.pathname.split('/')[2] || '';
+            return id.length === 11;
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      };
+
       for (const line of lines) {
         if (!line.trim()) continue;
 
@@ -900,11 +988,16 @@ function searchYouTubeQuick(query, maxResults) {
           const videoData = JSON.parse(line);
           
           if (videoData?.id && videoData?.title) {
+            const candidateUrl = videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            if (!isVideoUrl(candidateUrl)) {
+              // Skip channels/playlists or non-video entries
+              continue;
+            }
             results.push({
               title: videoData.title,
               creator: videoData.uploader || 'Unknown Artist',
               duration: videoData.duration || 0,
-              url: videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`,
+              url: candidateUrl,
               thumbnail: videoData.thumbnail || '',
               service: 'youtube'
             });
@@ -989,6 +1082,31 @@ function searchYouTube(query, maxResults) {
       const results = [];
       const lines = output.trim().split('\n');
 
+      // Helper: validate candidate is a YouTube VIDEO url (not channel/playlist)
+      const isVideoUrl = (u) => {
+        try {
+          const url = new URL(u);
+          const host = url.hostname.toLowerCase();
+          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+          if (!isYt) return false;
+          if (host === 'youtu.be') {
+            const id = url.pathname.replace(/^\//, '');
+            return id && id.length === 11;
+          }
+          if (url.pathname === '/watch') {
+            const v = url.searchParams.get('v');
+            return !!(v && v.length === 11);
+          }
+          if (url.pathname.startsWith('/shorts/')) {
+            const id = url.pathname.split('/')[2] || '';
+            return id.length === 11;
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      };
+
       for (const line of lines) {
         if (!line.trim()) continue;
 
@@ -996,11 +1114,16 @@ function searchYouTube(query, maxResults) {
           const videoData = JSON.parse(line);
           
           if (videoData?.id && videoData?.title) {
+            const candidateUrl = videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            if (!isVideoUrl(candidateUrl)) {
+              // Skip channels/playlists or non-video entries
+              continue;
+            }
             results.push({
               title: videoData.title,
               creator: videoData.uploader || 'Unknown Artist',
               duration: videoData.duration || 0,
-              url: videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`,
+              url: candidateUrl,
               thumbnail: videoData.thumbnail || '',
               service: 'youtube'
             });

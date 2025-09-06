@@ -166,6 +166,31 @@ export class ResolverYouTubeService extends BaseMusicService {
         const results: MusicSource[] = [];
         const lines = output.trim().split('\n');
 
+        // Helper: only accept direct YouTube video URLs (not channels/playlists)
+        const isVideoUrl = (u: string): boolean => {
+          try {
+            const url = new URL(u);
+            const host = url.hostname.toLowerCase();
+            const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+            if (!isYt) return false;
+            if (host === 'youtu.be') {
+              const id = url.pathname.replace(/^\//, '');
+              return !!(id && id.length === 11);
+            }
+            if (url.pathname === '/watch') {
+              const v = url.searchParams.get('v');
+              return !!(v && v.length === 11);
+            }
+            if (url.pathname.startsWith('/shorts/')) {
+              const id = url.pathname.split('/')[2] || '';
+              return id.length === 11;
+            }
+            return false;
+          } catch {
+            return false;
+          }
+        };
+
         for (const line of lines) {
           if (!line.trim()) continue;
 
@@ -173,11 +198,16 @@ export class ResolverYouTubeService extends BaseMusicService {
             const videoData = JSON.parse(line);
             
             if (videoData?.id && videoData?.title) {
+              const candidateUrl = videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
+              if (!isVideoUrl(candidateUrl)) {
+                // Skip channels/playlists or non-video entries
+                continue;
+              }
               results.push({
                 title: videoData.title,
                 creator: videoData.uploader || 'Unknown Artist',
                 duration: videoData.duration || 0,
-                url: videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`,
+                url: candidateUrl,
                 thumbnail: videoData.thumbnail || '',
                 service: 'youtube' as ServiceType
               });

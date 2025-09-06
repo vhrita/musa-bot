@@ -372,6 +372,17 @@ export class MusicManager {
     }
 
     const guildData = this.getGuildData(guildId);
+    // Cancel any scheduled prefetch for this guild
+    const t = this.prefetchTimers.get(guildId);
+    if (t) {
+      clearTimeout(t);
+      this.prefetchTimers.delete(guildId);
+      logEvent('prefetch_timer_cleared', { guildId });
+    }
+    // Clear active stream tracking for current song (if any)
+    if (guildData.currentSong) {
+      this.activeStreams.delete(guildData.currentSong.url);
+    }
     guildData.queue = [];
     guildData.currentSong = null;
     guildData.isPlaying = false;
