@@ -37,6 +37,11 @@ export const botConfig: BotConfig = {
     maxQueueSize: parseInt(process.env.MAX_QUEUE_SIZE || '100'),
     inactivityTimeout: parseInt(process.env.INACTIVITY_TIMEOUT || '60') * 1000,        // 1 minute default
     emptyChannelTimeout: parseInt(process.env.EMPTY_CHANNEL_TIMEOUT || '120') * 1000,  // 2 minutes default
+    // Prefetching
+    prefetchEnabled: (process.env.PREFETCH_ENABLED || 'true').toLowerCase() === 'true',
+    prefetchCount: parseInt(process.env.PREFETCH_COUNT || '2'),
+    prefetchAll: (process.env.PREFETCH_ALL || 'false').toLowerCase() === 'true',
+    streamCacheTTL: parseInt(process.env.STREAM_CACHE_TTL_MINUTES || '10') * 60 * 1000, // default 10 minutes
   },
 };
 

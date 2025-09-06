@@ -52,6 +52,11 @@ export interface BotConfig {
     maxQueueSize: number;
     inactivityTimeout: number;
     emptyChannelTimeout: number;
+    // Prefetching configuration
+    prefetchEnabled?: boolean;
+    prefetchCount?: number; // how many upcoming songs to prefetch
+    prefetchAll?: boolean;  // prefetch entire queue (caution)
+    streamCacheTTL?: number; // ms TTL for cached stream URLs
   };
 }
 
