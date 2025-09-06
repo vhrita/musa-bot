@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  youtube-resolver:
+    build: .
+    container_name: youtube-resolver
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./cookies:/cookies:ro
+      - ./logs:/app/logs

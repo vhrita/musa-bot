@@ -22,7 +22,8 @@ COPY . .
 
 # Create necessary directories
 RUN mkdir -p logs /data/cookies /tmp \
-  && ln -s /data/cookies /app/cookies \
+  && ln -s /data/cookies /app/cookies || true \
+  && ln -s /data/cookies /cookies || true \
   && chmod 755 /app
 
 # Create non-root user
