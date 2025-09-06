@@ -21,10 +21,14 @@ const logger = winston.createLogger({
     }),
     new winston.transports.File({
       filename: 'logs/error.log',
-      level: 'error'
+      level: 'error',
+      ...(botConfig.logging.maxSizeBytes !== undefined ? { maxsize: botConfig.logging.maxSizeBytes } : {}),
+      ...(botConfig.logging.maxFiles !== undefined ? { maxFiles: botConfig.logging.maxFiles } : {})
     }),
     new winston.transports.File({
-      filename: 'logs/combined.log'
+      filename: 'logs/combined.log',
+      ...(botConfig.logging.maxSizeBytes !== undefined ? { maxsize: botConfig.logging.maxSizeBytes } : {}),
+      ...(botConfig.logging.maxFiles !== undefined ? { maxFiles: botConfig.logging.maxFiles } : {})
     })
   ]
 });
