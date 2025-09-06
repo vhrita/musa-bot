@@ -434,10 +434,8 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       maxBodyLength: 50 * 1024 * 1024
     };
 
-    // Add range header for partial content requests
-    if (req.headers.range) {
-      axiosConfig.headers['Range'] = req.headers.range;
-    }
+    // Always request a range to enable resume logic; default to bytes=0-
+    axiosConfig.headers['Range'] = req.headers.range || 'bytes=0-';
 
     const response = await axios(axiosConfig);
 
@@ -466,65 +464,221 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       return res.end();
     }
 
-    // Ultra-simple streaming for Pi 3 - no heartbeat, direct pipe
-    response.data.pipe(res);
+    // Ensure the server never times out our response
+    if (typeof res.setTimeout === 'function') {
+      res.setTimeout(0);
+    }
 
-    let streamEnded = false;
+    // Parse initial range requested by the client (default to 0-)
+    function parseStartFromRange(rangeHeader) {
+      if (!rangeHeader) return 0;
+      const m = /bytes\s*=\s*(\d+)-/i.exec(rangeHeader);
+      return m ? parseInt(m[1], 10) : 0;
+    }
 
-    response.data.on('error', (error) => {
-      if (!streamEnded) {
-        streamEnded = true;
-        recordFailure();
-        recordCallComplete(decodedUrl);
-        logger.error('Stream proxy error', { 
-          error: error.message, 
-          code: error.code,
-          url: decodedUrl
-        });
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Stream proxy failed' });
+    function parseContentRange(header) {
+      // Example: "bytes 0-1023/2048"
+      if (!header) return null;
+      const m = /bytes\s+(\d+)-(\d+)\/(\d+)/i.exec(header);
+      if (!m) return null;
+      return {
+        start: parseInt(m[1], 10),
+        end: parseInt(m[2], 10),
+        total: parseInt(m[3], 10)
+      };
+    }
+
+    const clientInitialStart = parseStartFromRange(req.headers.range);
+
+    // Determine total expected bytes from the first response
+    let expectedTotalBytes = null;
+    const cr = parseContentRange(response.headers['content-range']);
+    if (cr) {
+      expectedTotalBytes = cr.total - clientInitialStart;
+    } else if (response.headers['content-length']) {
+      expectedTotalBytes = parseInt(response.headers['content-length'], 10);
+    }
+
+    // We will stitch upstream chunks into a single response without ending it between attempts
+    let downloadedBytes = 0;
+    let retries = 0;
+    const maxRetries = 6; // a few reconnections for long tracks
+    let activeUpstream = null;
+    let finished = false;
+
+    // Use a small helper that starts an upstream request at a given offset
+    const startUpstream = async (offset) => {
+      if (finished) return;
+      const startAt = clientInitialStart + offset;
+      const rangeHeader = `bytes=${startAt}-`;
+
+      const cfg = {
+        ...axiosConfig,
+        // Always request a specific range to enable resume
+        headers: {
+          ...axiosConfig.headers,
+          Range: rangeHeader
         }
-      }
-    });
+      };
 
-    response.data.on('end', () => {
-      if (!streamEnded) {
-        streamEnded = true;
-        recordSuccess();
-        recordCallComplete(decodedUrl);
-        logger.info('Stream proxy completed', { url: decodedUrl });
-      }
-    });
+      logger.info('Proxy upstream request', {
+        url: decodedUrl,
+        range: rangeHeader,
+        attempt: retries + 1
+      });
 
-    response.data.on('close', () => {
-      if (!streamEnded) {
-        streamEnded = true;
-        recordCallComplete(decodedUrl);
-        logger.info('Stream proxy closed', { url: decodedUrl });
-      }
-    });
+      const upstream = await axios(cfg);
+      activeUpstream = upstream.data;
 
-    // Handle client disconnect
-    req.on('close', () => {
-      if (!streamEnded) {
-        streamEnded = true;
+      // First attempt already set headers/status above; next attempts just append bytes
+      activeUpstream.on('data', (chunk) => {
+        downloadedBytes += chunk.length;
+      });
+
+      // Pipe but do not end the client response; we may need to resume
+      activeUpstream.pipe(res, { end: false });
+
+      activeUpstream.once('end', () => {
+        if (finished) return;
+
+        // If we don't know how much is expected, assume completion on end
+        if (expectedTotalBytes == null || downloadedBytes >= expectedTotalBytes) {
+          finished = true;
+          recordSuccess();
+          recordCallComplete(decodedUrl);
+          logger.info('Stream proxy completed', { url: decodedUrl, bytes: downloadedBytes });
+          return res.end();
+        }
+
+        // Ended early without error: resume
+        if (retries < maxRetries) {
+          retries += 1;
+          logger.warn('Upstream ended early, resuming', {
+            url: decodedUrl,
+            downloaded: downloadedBytes,
+            expected: expectedTotalBytes,
+            attempt: retries
+          });
+          startUpstream(downloadedBytes).catch(handleFatalError);
+        } else {
+          handleFatalError(new Error('Max resume attempts reached'));
+        }
+      });
+
+      activeUpstream.once('error', (error) => {
+        if (finished) return;
+        if (retries < maxRetries) {
+          retries += 1;
+          logger.error('Upstream stream error, will resume', {
+            url: decodedUrl,
+            error: error.message,
+            code: error.code,
+            downloaded: downloadedBytes,
+            attempt: retries
+          });
+          // Slight delay before retry to avoid hammering
+          setTimeout(() => startUpstream(downloadedBytes).catch(handleFatalError), 250);
+        } else {
+          handleFatalError(error);
+        }
+      });
+
+      // If client disconnects, stop fetching
+      res.req.once('close', () => {
+        if (finished) return;
+        finished = true;
+        try { activeUpstream.destroy && activeUpstream.destroy(); } catch {}
         recordCallComplete(decodedUrl);
         logger.warn('Client disconnected from stream', { url: decodedUrl });
-        if (response.data && typeof response.data.destroy === 'function') {
-          response.data.destroy();
-        }
+      });
+    };
+
+    const handleFatalError = (error) => {
+      if (finished) return;
+      finished = true;
+      recordFailure();
+      recordCallComplete(decodedUrl);
+      logger.error('Stream proxy error', {
+        error: error.message,
+        code: error.code,
+        url: decodedUrl
+      });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Stream proxy failed' });
+      } else {
+        try { res.end(); } catch {}
       }
+    };
+
+    // For the very first upstream we already fetched one response above. Use it and then switch to resume logic if needed
+    // Attach counters and forward data without ending the client response
+    response.data.on('data', (chunk) => {
+      downloadedBytes += chunk.length;
+    });
+    response.data.pipe(res, { end: false });
+
+    const onInitialEnd = () => {
+      if (finished) return;
+      if (expectedTotalBytes == null || downloadedBytes >= expectedTotalBytes) {
+        finished = true;
+        recordSuccess();
+        recordCallComplete(decodedUrl);
+        logger.info('Stream proxy completed', { url: decodedUrl, bytes: downloadedBytes });
+        return res.end();
+      }
+      // Resume from where we left off
+      if (retries < maxRetries) {
+        retries += 1;
+        logger.warn('Initial upstream ended early, resuming', {
+          url: decodedUrl,
+          downloaded: downloadedBytes,
+          expected: expectedTotalBytes,
+          attempt: retries
+        });
+        startUpstream(downloadedBytes).catch(handleFatalError);
+      } else {
+        handleFatalError(new Error('Max resume attempts reached'));
+      }
+    };
+
+    const onInitialError = (error) => {
+      if (finished) return;
+      if (retries < maxRetries) {
+        retries += 1;
+        logger.error('Initial upstream error, will resume', {
+          url: decodedUrl,
+          error: error.message,
+          code: error.code,
+          downloaded: downloadedBytes,
+          attempt: retries
+        });
+        setTimeout(() => startUpstream(downloadedBytes).catch(handleFatalError), 250);
+      } else {
+        handleFatalError(error);
+      }
+    };
+
+    response.data.once('end', onInitialEnd);
+    response.data.once('error', onInitialError);
+    response.data.once('close', () => {
+      // close may be followed by end/error; nothing to do here specifically
+    });
+
+    // Handle client disconnect on the initial stream
+    req.on('close', () => {
+      if (finished) return;
+      finished = true;
+      try { response.data && response.data.destroy && response.data.destroy(); } catch {}
+      recordCallComplete(decodedUrl);
+      logger.warn('Client disconnected from stream', { url: decodedUrl });
     });
 
     req.on('aborted', () => {
-      if (!streamEnded) {
-        streamEnded = true;
-        recordCallComplete(decodedUrl);
-        logger.warn('Client aborted stream', { url: decodedUrl });
-        if (response.data && typeof response.data.destroy === 'function') {
-          response.data.destroy();
-        }
-      }
+      if (finished) return;
+      finished = true;
+      try { response.data && response.data.destroy && response.data.destroy(); } catch {}
+      recordCallComplete(decodedUrl);
+      logger.warn('Client aborted stream', { url: decodedUrl });
     });
 
   } catch (error) {
