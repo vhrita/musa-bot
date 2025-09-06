@@ -39,6 +39,11 @@ export interface BotConfig {
   clientId: string;
   prefix: string;
   musaChannelId: string | undefined;
+  // Optional deployment/runtime extras
+  guildId?: string;               // for deploy-commands convenience
+  resolverUrl?: string;           // external YouTube resolver base URL
+  ytdlpCookies?: string;          // path to yt-dlp cookies
+  ytdlpProxy?: string;            // proxy for yt-dlp
   services: {
     youtube: ServiceConfig;
     internetArchive: ServiceConfig;
@@ -46,6 +51,8 @@ export interface BotConfig {
   };
   logging: {
     level: string;
+    maxSizeBytes?: number;
+    maxFiles?: number;
   };
   music: {
     searchTimeout: number;
@@ -75,6 +82,6 @@ declare module 'discord.js' {
   }
 }
 
-// Import for type declaration
-import { Collection } from 'discord.js';
-import { MusicManager } from '../services/MusicManager';
+// Import for type declaration (type-only to avoid runtime cycles)
+import type { Collection } from 'discord.js';
+import type { MusicManager } from '../services/MusicManager';
