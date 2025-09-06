@@ -30,7 +30,7 @@ USER nodejs
 EXPOSE 3001
 
 # Set memory limits for Pi 3
-ENV NODE_OPTIONS="--max-old-space-size=512 --gc-interval=100 --expose-gc"
+ENV NODE_OPTIONS="--max-old-space-size=512 --expose-gc"
 ENV UV_THREADPOOL_SIZE=2
 
 # Health check
