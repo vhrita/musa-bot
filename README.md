@@ -149,31 +149,10 @@ musa-bot/
 
 ## ⚙️ Configuration
 
-### 🔐 Required Environment Variables
-```env
-DISCORD_TOKEN=your_bot_token_here
-```
+The bot follows 12‑factor config with a validated schema (Zod). See full, up‑to‑date configuration and defaults here:
 
-### 🎛️ Optional Configuration
-```env
-# Channel restriction (optional)
-MUSA_CHANNEL_ID=your_channel_id
-
-# Service toggles
-ENABLE_YOUTUBE=true
-ENABLE_RADIO=true
-ENABLE_INTERNET_ARCHIVE=true
-
-# YouTube proxy (if needed)
-YOUTUBE_PROXY=http://proxy:port
-
-# Music settings
-MAX_QUEUE_SIZE=100
-INACTIVITY_TIMEOUT=60
-
-# Logging
-LOG_LEVEL=INFO
-```
+- docs/BOT_CONFIG.md
+- youtube-resolver/README.md (for the Raspberry Pi resolver)
 
 ## 🎯 Gaming Community Legacy
 
@@ -210,6 +189,12 @@ npm run lint       # Run ESLint
 npm run lint:fix   # Fix linting issues
 npm test           # Run tests (when implemented)
 ```
+
+## 📚 Additional Docs
+
+- docs/BOT_CONFIG.md — Bot environment variables, defaults and behavior
+- youtube-resolver/README.md — Resolver usage, security and configuration
+- docs/TODO.md — Backlog and follow‑ups
 
 ### 🐳 Docker Development
 ```bash
