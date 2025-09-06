@@ -422,12 +422,12 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       httpsAgent: require('https').Agent({
         keepAlive: false, // Disable keepalive to save memory
         maxSockets: 1,
-        timeout: 180000 // 3 minutes max
+        timeout: 0 // No timeout for streaming - let YouTube decide
       }),
       httpAgent: require('http').Agent({
         keepAlive: false,
         maxSockets: 1,
-        timeout: 180000
+        timeout: 0 // No timeout for streaming - let YouTube decide
       }),
       // Memory optimization
       maxContentLength: 50 * 1024 * 1024, // 50MB max
