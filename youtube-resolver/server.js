@@ -3,6 +3,9 @@ const cors = require('cors');
 const { spawn } = require('child_process');
 const winston = require('winston');
 const axios = require('axios');
+const dns = require('dns').promises;
+const net = require('net');
+const { config: resolverConfig } = require('./config');
 
 // Force garbage collection for Pi 3 memory management
 if (global.gc) {
@@ -12,7 +15,7 @@ if (global.gc) {
 }
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = resolverConfig.port;
 
 // Ultra-minimal cache for Pi 3
 const searchCache = new Map();
@@ -33,19 +36,60 @@ const CIRCUIT_BREAKER = {
 
 // Configure logging
 const logger = winston.createLogger({
-  level: 'info',
+  level: resolverConfig.logLevel,
   format: winston.format.combine(
     winston.format.timestamp(),
     winston.format.json()
   ),
   transports: [
     new winston.transports.Console(),
-    new winston.transports.File({ filename: 'resolver.log' })
+    new winston.transports.File({ filename: 'resolver.log', maxsize: resolverConfig.logMaxSizeMB * 1024 * 1024, maxFiles: resolverConfig.logMaxFiles })
   ]
 });
 
-app.use(cors());
-app.use(express.json());
+// CORS with env-configured allowed origins
+// ALLOWED_ORIGINS="https://bot.example.com,https://my.site"
+const allowedOrigins = resolverConfig.allowedOrigins;
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // If no origins configured, disable CORS (no headers added)
+    if (!allowedOrigins.length) return cb(null, false);
+    if (!origin) return cb(null, false);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(null, false);
+  }
+}));
+// Limit JSON body size to prevent abuse while matching bot payload sizes
+app.use(express.json({ limit: '10kb' }));
+// Security header
+app.disable('x-powered-by');
+// Optional trust proxy for correct client IP when behind reverse proxies
+if (resolverConfig.trustProxy) {
+  app.set('trust proxy', true);
+}
+
+// Safe logging helpers for stream URLs
+function sanitizeStreamMeta(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    const expire = u.searchParams.get('expire');
+    const meta = { streamHost: u.host, streamPath: u.pathname };
+    if (expire && !Number.isNaN(Number(expire))) meta.expire = Number(expire);
+    return meta;
+  } catch {
+    return { streamHost: 'invalid', streamPath: '' };
+  }
+}
+
+function buildUrlLogMeta(rawUrl) {
+  const base = sanitizeStreamMeta(rawUrl);
+  // In non-production, also include full URL to aid debugging
+  if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
+    return { ...base, originalUrl: rawUrl };
+  }
+  return base;
+}
 
 // Cache management functions
 function getCacheKey(query, maxResults) {
@@ -130,7 +174,7 @@ function addToUrlQueue(url, req, res) {
   const queue = urlQueues.get(url);
   queue.push({ req, res, timestamp: Date.now() });
   
-  logger.info('Request queued', { url, queueSize: queue.length });
+  logger.info('Request queued', { ...buildUrlLogMeta(url), queueSize: queue.length });
   
   // Set timeout to reject old requests
   setTimeout(() => {
@@ -179,7 +223,7 @@ function setCachedResult(query, maxResults, results) {
 
 // Function to get cookie arguments for yt-dlp
 function getCookieArgs() {
-  const cookiesPath = process.env.YTDLP_COOKIES_PATH || process.env.YTDLP_COOKIES;
+  const cookiesPath = resolverConfig.ytdlpCookiesPath;
   
   if (cookiesPath) {
     // Check if file exists
@@ -228,6 +272,14 @@ function cleanupTempFiles() {
 // Cleanup on exit
 process.on('SIGTERM', cleanupTempFiles);
 process.on('SIGINT', cleanupTempFiles);
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection', {
+    error: reason instanceof Error ? reason.message : String(reason)
+  });
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception', { error: err.message, stack: err.stack });
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -274,12 +326,18 @@ app.get('/cache/stats', (req, res) => {
 });
 
 // Search YouTube videos with quick mode fallback
-app.post('/search', async (req, res) => {
-  const { query, maxResults = 3, quickMode = true } = req.body;
-  
-  if (!query) {
-    return res.status(400).json({ error: 'Query is required' });
+app.post('/search', rateLimitByIp, async (req, res) => {
+  // Validate and normalize inputs according to bot usage
+  const queryRaw = req.body?.query;
+  if (typeof queryRaw !== 'string' || !queryRaw.trim() || queryRaw.length > 200) {
+    return res.status(400).json({ error: 'Invalid query' });
   }
+  let maxResults = Number(req.body?.maxResults);
+  if (!Number.isFinite(maxResults)) maxResults = 3;
+  // Bot defaults to 3; allow up to 5 to keep Pi stable
+  maxResults = Math.max(1, Math.min(5, Math.floor(maxResults)));
+  const quickMode = typeof req.body?.quickMode === 'boolean' ? req.body.quickMode : true;
+  const query = queryRaw.trim();
 
   logger.info('YouTube search request', { query, maxResults, quickMode });
 
@@ -319,14 +377,26 @@ app.post('/search', async (req, res) => {
 });
 
 // Get stream URL for a specific video
-app.post('/stream', async (req, res) => {
-  const { url, proxy = false, bypass = false } = req.body;
-  
-  // Extract URL from MusicSource object if needed
-  const videoUrl = typeof url === 'string' ? url : url?.url;
-  
-  if (!videoUrl) {
-    return res.status(400).json({ error: 'URL is required' });
+app.post('/stream', rateLimitByIp, async (req, res) => {
+  // Validate and normalize inputs according to bot usage
+  const urlField = req.body?.url;
+  const rawUrl = typeof urlField === 'string' ? urlField : urlField?.url;
+  const proxy = typeof req.body?.proxy === 'boolean' ? req.body.proxy : false; // bot sends true
+  const bypass = typeof req.body?.bypass === 'boolean' ? req.body.bypass : false;
+
+  if (typeof rawUrl !== 'string' || !rawUrl.trim() || rawUrl.length > 2048) {
+    return res.status(400).json({ error: 'Invalid URL' });
+  }
+  let videoUrl = rawUrl.trim();
+  try {
+    const u = new URL(videoUrl);
+    const host = u.hostname.toLowerCase();
+    const allowed = host === 'youtube.com' || host === 'www.youtube.com' || host === 'youtu.be' || host.endsWith('.youtube.com');
+    if (!allowed) {
+      return res.status(400).json({ error: 'Only YouTube URLs are allowed' });
+    }
+  } catch {
+    return res.status(400).json({ error: 'Invalid URL format' });
   }
 
   logger.info('Stream URL request', { url: videoUrl, proxy, bypass });
@@ -357,7 +427,7 @@ app.post('/stream', async (req, res) => {
 });
 
 // Proxy stream endpoint - handles both GET and HEAD requests
-app.all('/proxy-stream', async (req, res) => {
+app.all('/proxy-stream', rateLimitByIp, async (req, res) => {
   const { url } = req.query;
   
   if (!url) {
@@ -366,16 +436,33 @@ app.all('/proxy-stream', async (req, res) => {
 
   const decodedUrl = decodeURIComponent(url);
 
+  // Validate request method
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Destination validation (hosts/schemes and IP ranges) via env
+  try {
+    const ok = await isAllowedDestination(decodedUrl);
+    if (!ok) {
+      logger.warn('Rejected proxy-stream URL (validation failed)', { ...buildUrlLogMeta(decodedUrl), method: req.method });
+      return res.status(400).json({ error: 'Invalid or disallowed URL' });
+    }
+  } catch (e) {
+    logger.warn('Destination validation error', { ...buildUrlLogMeta(decodedUrl), error: e.message });
+    return res.status(400).json({ error: 'Invalid or disallowed URL' });
+  }
+
   // Check circuit breaker
   if (isCircuitOpen()) {
-    logger.warn('Circuit breaker open, rejecting request', { url: decodedUrl });
+    logger.warn('Circuit breaker open, rejecting request', { ...buildUrlLogMeta(decodedUrl) });
     return res.status(503).json({ error: 'Service temporarily unavailable' });
   }
 
   // Check rate limiting
   if (!canMakeCall(decodedUrl)) {
     logger.warn('Rate limit exceeded, queueing request', { 
-      url: decodedUrl, 
+      ...buildUrlLogMeta(decodedUrl), 
       activeCalls: activeCalls.get(decodedUrl),
       queueSize: (urlQueues.get(decodedUrl) || []).length
     });
@@ -395,7 +482,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
 
   try {
     logger.info('Proxying stream', { 
-      originalUrl: decodedUrl, 
+      ...buildUrlLogMeta(decodedUrl),
       method: req.method,
       range: req.headers.range,
       activeCalls: activeCalls.get(decodedUrl)
@@ -460,7 +547,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
 
     // For HEAD requests, just send headers
     if (isHeadRequest) {
-      logger.info('HEAD request completed', { url: decodedUrl, status: statusCode });
+      logger.info('HEAD request completed', { ...buildUrlLogMeta(decodedUrl), status: statusCode });
       return res.end();
     }
 
@@ -521,11 +608,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         }
       };
 
-      logger.info('Proxy upstream request', {
-        url: decodedUrl,
-        range: rangeHeader,
-        attempt: retries + 1
-      });
+      logger.info('Proxy upstream request', { ...buildUrlLogMeta(decodedUrl), range: rangeHeader, attempt: retries + 1 });
 
       const upstream = await axios(cfg);
       activeUpstream = upstream.data;
@@ -546,19 +629,14 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
           finished = true;
           recordSuccess();
           recordCallComplete(decodedUrl);
-          logger.info('Stream proxy completed', { url: decodedUrl, bytes: downloadedBytes });
+          logger.info('Stream proxy completed', { ...buildUrlLogMeta(decodedUrl), bytes: downloadedBytes });
           return res.end();
         }
 
         // Ended early without error: resume
         if (retries < maxRetries) {
           retries += 1;
-          logger.warn('Upstream ended early, resuming', {
-            url: decodedUrl,
-            downloaded: downloadedBytes,
-            expected: expectedTotalBytes,
-            attempt: retries
-          });
+          logger.warn('Upstream ended early, resuming', { ...buildUrlLogMeta(decodedUrl), downloaded: downloadedBytes, expected: expectedTotalBytes, attempt: retries });
           startUpstream(downloadedBytes).catch(handleFatalError);
         } else {
           handleFatalError(new Error('Max resume attempts reached'));
@@ -569,13 +647,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         if (finished) return;
         if (retries < maxRetries) {
           retries += 1;
-          logger.error('Upstream stream error, will resume', {
-            url: decodedUrl,
-            error: error.message,
-            code: error.code,
-            downloaded: downloadedBytes,
-            attempt: retries
-          });
+          logger.error('Upstream stream error, will resume', { ...buildUrlLogMeta(decodedUrl), error: error.message, code: error.code, downloaded: downloadedBytes, attempt: retries });
           // Slight delay before retry to avoid hammering
           setTimeout(() => startUpstream(downloadedBytes).catch(handleFatalError), 250);
         } else {
@@ -589,7 +661,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         finished = true;
         try { activeUpstream.destroy && activeUpstream.destroy(); } catch {}
         recordCallComplete(decodedUrl);
-        logger.warn('Client disconnected from stream', { url: decodedUrl });
+        logger.warn('Client disconnected from stream', { ...buildUrlLogMeta(decodedUrl) });
       });
     };
 
@@ -598,11 +670,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       finished = true;
       recordFailure();
       recordCallComplete(decodedUrl);
-      logger.error('Stream proxy error', {
-        error: error.message,
-        code: error.code,
-        url: decodedUrl
-      });
+      logger.error('Stream proxy error', { error: error.message, code: error.code, ...buildUrlLogMeta(decodedUrl) });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Stream proxy failed' });
       } else {
@@ -623,18 +691,13 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
         finished = true;
         recordSuccess();
         recordCallComplete(decodedUrl);
-        logger.info('Stream proxy completed', { url: decodedUrl, bytes: downloadedBytes });
+        logger.info('Stream proxy completed', { ...buildUrlLogMeta(decodedUrl), bytes: downloadedBytes });
         return res.end();
       }
       // Resume from where we left off
       if (retries < maxRetries) {
         retries += 1;
-        logger.warn('Initial upstream ended early, resuming', {
-          url: decodedUrl,
-          downloaded: downloadedBytes,
-          expected: expectedTotalBytes,
-          attempt: retries
-        });
+        logger.warn('Initial upstream ended early, resuming', { ...buildUrlLogMeta(decodedUrl), downloaded: downloadedBytes, expected: expectedTotalBytes, attempt: retries });
         startUpstream(downloadedBytes).catch(handleFatalError);
       } else {
         handleFatalError(new Error('Max resume attempts reached'));
@@ -645,13 +708,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       if (finished) return;
       if (retries < maxRetries) {
         retries += 1;
-        logger.error('Initial upstream error, will resume', {
-          url: decodedUrl,
-          error: error.message,
-          code: error.code,
-          downloaded: downloadedBytes,
-          attempt: retries
-        });
+        logger.error('Initial upstream error, will resume', { ...buildUrlLogMeta(decodedUrl), error: error.message, code: error.code, downloaded: downloadedBytes, attempt: retries });
         setTimeout(() => startUpstream(downloadedBytes).catch(handleFatalError), 250);
       } else {
         handleFatalError(error);
@@ -670,7 +727,7 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       finished = true;
       try { response.data && response.data.destroy && response.data.destroy(); } catch {}
       recordCallComplete(decodedUrl);
-      logger.warn('Client disconnected from stream', { url: decodedUrl });
+      logger.warn('Client disconnected from stream', { ...buildUrlLogMeta(decodedUrl) });
     });
 
     req.on('aborted', () => {
@@ -678,18 +735,14 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
       finished = true;
       try { response.data && response.data.destroy && response.data.destroy(); } catch {}
       recordCallComplete(decodedUrl);
-      logger.warn('Client aborted stream', { url: decodedUrl });
+      logger.warn('Client aborted stream', { ...buildUrlLogMeta(decodedUrl) });
     });
 
   } catch (error) {
     recordFailure();
     recordCallComplete(decodedUrl);
     
-    logger.error('Stream proxy failed', {
-      url: decodedUrl, 
-      error: error.message, 
-      code: error.code
-    });
+    logger.error('Stream proxy failed', { ...buildUrlLogMeta(decodedUrl), error: error.message, code: error.code });
     
     if (!res.headersSent) {
       res.status(500).json({ error: 'Stream proxy failed' });
@@ -698,6 +751,80 @@ async function handleProxyStreamRequest(req, res, decodedUrl) {
     // Process next queued request for this URL
     processUrlQueue(decodedUrl);
   }
+}
+
+// ===============
+// Security helpers
+// ===============
+
+function parseAllowedList(envName, fallback = '') {
+  return (process.env[envName] || fallback)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function isPrivateIp(ip) {
+  // IPv4 private and loopback ranges
+  if (net.isIP(ip) === 4) {
+    if (ip === '127.0.0.1') return true;
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    // 172.16.0.0 – 172.31.255.255
+    const parts = ip.split('.').map(n => parseInt(n, 10));
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  }
+  // IPv6 loopback/link-local/unique-local
+  if (ip === '::1') return true;
+  if (ip.toLowerCase().startsWith('fe80:')) return true; // link-local
+  if (ip.toLowerCase().startsWith('fc') || ip.toLowerCase().startsWith('fd')) return true; // unique local
+  return false;
+}
+
+function ipToInt(ip) {
+  const parts = ip.split('.').map(n => parseInt(n, 10));
+  if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return null;
+  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+
+function ipInCidr(ip, cidr) {
+  // IPv4-only CIDR check (e.g., 1.2.3.0/24). IPv6 not supported here.
+  const [netAddr, maskBitsStr] = cidr.split('/');
+  const maskBits = parseInt(maskBitsStr, 10);
+  const ipInt = ipToInt(ip);
+  const netInt = ipToInt(netAddr);
+  if (ipInt == null || netInt == null) return false;
+  if (Number.isNaN(maskBits) || maskBits < 0 || maskBits > 32) return false;
+  const mask = maskBits === 0 ? 0 : (~0 << (32 - maskBits)) >>> 0;
+  return (ipInt & mask) === (netInt & mask);
+}
+
+async function isAllowedDestination(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return false; }
+
+  // Schemes allowed (default https only)
+  const allowedSchemes = resolverConfig.allowedDestSchemes;
+  if (!allowedSchemes.includes(u.protocol.replace(':', ''))) return false;
+
+  const host = u.hostname.toLowerCase();
+  const allowedHostSuffixes = resolverConfig.allowedDestHostSuffixes;
+  const hostAllowed = allowedHostSuffixes.some(suf => host === suf || host.endsWith(`.${suf}`));
+  if (!hostAllowed) return false;
+
+  // Resolve DNS and check IPs
+  const addrs = await dns.lookup(host, { all: true });
+  if (!addrs.length) return false;
+
+  // If ALLOWED_DEST_CIDRS is provided, only allow IPs that fall in at least one CIDR
+  const allowedCidrs = resolverConfig.allowedDestCidrs;
+  if (allowedCidrs.length > 0) {
+    const ok = addrs.some(a => net.isIP(a.address) === 4 && allowedCidrs.some(c => ipInCidr(a.address, c)));
+    return ok;
+  }
+
+  // Default: block private ranges, allow public
+  return addrs.every(a => !isPrivateIp(a.address));
 }
 
 // Quick search YouTube using minimal yt-dlp options for faster results
@@ -721,7 +848,7 @@ function searchYouTubeQuick(query, maxResults) {
     ];
 
     // Only add cookies for quick search if specifically enabled
-    if (process.env.QUICK_SEARCH_COOKIES === 'true') {
+    if (resolverConfig.quickSearchCookies) {
       ytDlpArgs.push(...getCookieArgs());
     }
 
@@ -967,7 +1094,15 @@ app.listen(port, () => {
     cacheEnabled: true,
     cacheTTL: CACHE_TTL,
     maxCacheSize: MAX_CACHE_SIZE,
-    quickSearchEnabled: true
+    quickSearchEnabled: true,
+    rateLimit: {
+      windowMs: resolverConfig.rateLimitWindowMs,
+      max: resolverConfig.rateLimitMax,
+      burst: resolverConfig.rateLimitBurst
+    },
+    trustProxy: resolverConfig.trustProxy,
+    logMaxSizeMB: resolverConfig.logMaxSizeMB,
+    logMaxFiles: resolverConfig.logMaxFiles
   });
   console.log(`🎵 YouTube Resolver API running on port ${port}`);
   console.log(`🔍 Search: POST http://localhost:${port}/search`);
@@ -977,3 +1112,56 @@ app.listen(port, () => {
   console.log(`🧹 Clear Cache: POST http://localhost:${port}/cache/clear`);
   console.log(`⚡ Performance optimizations enabled for Raspberry Pi`);
 });
+// =====================
+// Simple IP rate limiter
+// =====================
+const ipBuckets = new Map(); // ip -> { tokens, last }
+const RL_WINDOW = resolverConfig.rateLimitWindowMs;
+const RL_MAX = resolverConfig.rateLimitMax;
+const RL_BURST = resolverConfig.rateLimitBurst; // bucket capacity
+const RL_REFILL_PER_MS = RL_MAX / RL_WINDOW; // average allowed per ms
+
+function rateLimitByIp(req, res, next) {
+  // Disable if misconfigured
+  if (!RL_MAX || RL_MAX <= 0) return next();
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const now = Date.now();
+  let b = ipBuckets.get(ip);
+  if (!b) {
+    b = { tokens: RL_BURST, last: now };
+    ipBuckets.set(ip, b);
+  } else {
+    const elapsed = now - b.last;
+    if (elapsed > 0) {
+      b.tokens = Math.min(RL_BURST, b.tokens + elapsed * RL_REFILL_PER_MS);
+      b.last = now;
+    }
+  }
+  if (b.tokens < 1) {
+    res.set('Retry-After', '1');
+    logger.warn('IP rate limit exceeded', { ip, path: req.path });
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  b.tokens -= 1;
+  return next();
+}
+
+// Periodic housekeeping to avoid unbounded Map growth
+const HOUSEKEEP_INTERVAL = Math.max(60_000, RL_WINDOW);
+const hkTimer = setInterval(() => {
+  const now = Date.now();
+  // Prune rate limiter buckets inactive for > 2 * window
+  for (const [ip, bucket] of ipBuckets.entries()) {
+    if (now - bucket.last > RL_WINDOW * 2) {
+      ipBuckets.delete(ip);
+    }
+  }
+  // Prune URL queues with no pending entries
+  for (const [url, queue] of urlQueues.entries()) {
+    if (!queue || queue.length === 0) {
+      urlQueues.delete(url);
+    }
+  }
+}, HOUSEKEEP_INTERVAL);
+// Do not keep the event loop alive for housekeeping only
+if (typeof hkTimer.unref === 'function') hkTimer.unref();
