@@ -11,6 +11,8 @@ import {
 } from '@discordjs/voice';
 import { VoiceChannel } from 'discord.js';
 import { spawn } from 'child_process';
+import { PresenceManager } from './PresenceManager';
+import { Announcer } from './Announcer';
 import { GuildMusicData, QueuedSong, LoopMode } from '../types/music';
 import { MultiSourceManager } from '../services/MultiSourceManager';
 import { logEvent, logError, logWarning } from '../utils/logger';
@@ -141,7 +143,7 @@ export class MusicManager {
     logEvent('music_manager_cleanup', { guildId });
   }
 
-  async addToQueue(guildId: string, song: QueuedSong): Promise<void> {
+  async addToQueue(guildId: string, song: QueuedSong, requestedById?: string): Promise<void> {
     const guildData = this.getGuildData(guildId);
     
     // Check queue size limit
@@ -150,6 +152,8 @@ export class MusicManager {
     }
 
     guildData.queue.push(song);
+    // Track last added meta for footer
+    guildData.lastAdded = { by: song.requestedBy, at: Date.now(), ...(requestedById ? { byId: requestedById } : {}) } as any;
     
     logEvent('song_added_to_queue', {
       guildId,
@@ -161,6 +165,22 @@ export class MusicManager {
 
     // Schedule prefetch for upcoming songs
     this.schedulePrefetch(guildId);
+
+    // Update status message (queue changed)
+    try {
+      const connection = this.voiceConnections.get(guildId);
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = {
+        currentSong: guildData.currentSong,
+        queue: guildData.queue,
+        recent: guildData.recentlyPlayed,
+      };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
@@ -198,12 +218,27 @@ export class MusicManager {
 
     if (!nextSong) {
       // No more songs, stop playing
+      // Clear recent when going truly idle (no next song)
       guildData.currentSong = null;
+      delete guildData.currentSongStartedAt;
+      guildData.recentlyPlayed = [];
       guildData.isPlaying = false;
       guildData.isPaused = false;
       
       this.startInactivityTimer(guildId);
+      // Start idle presence cycle (rotating phrases)
+      try { PresenceManager.startIdleCycle(); } catch { /* ignore */ }
       
+      // Update status message to reflect silence/empty queue
+      try {
+        const connection = this.voiceConnections.get(guildId);
+        const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = { currentSong: null, queue: guildData.queue, recent: guildData.recentlyPlayed };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+      } catch { /* ignore */ }
+
       logEvent('queue_finished', { guildId });
       return;
     }
@@ -255,18 +290,41 @@ export class MusicManager {
 
         // Set up player event handlers
         player.on(AudioPlayerStatus.Playing, () => {
-          guildData.isPlaying = true;
-          guildData.isPaused = false;
+          const data = this.getGuildData(guildId);
+          data.isPlaying = true;
+          data.isPaused = false;
+          data.currentSongStartedAt = Date.now();
           this.cancelInactivityTimer(guildId);
-          
+
+          const current = data.currentSong;
           logEvent('audio_player_playing', { 
             guildId, 
-            title: song.title,
-            service: song.service 
+            title: current?.title,
+            service: current?.service 
           });
 
           // Prefetch upcoming songs when playback stabilizes
           this.schedulePrefetch(guildId, 1500);
+
+          // Update global presence to show current track
+          try {
+            if (current) {
+              const presenceText = current.creator ? `${current.title} — ${current.creator}` : current.title;
+              PresenceManager.updatePlayingPresence(presenceText.substring(0, 120));
+            }
+          } catch { /* ignore */ }
+
+          // Announce in the Musa channel with embed and optional thumbnail
+          try {
+            const connection = this.voiceConnections.get(guildId);
+            const voiceChannelId = connection?.joinConfig?.channelId;
+            const payload: any = { currentSong: current, queue: data.queue, recent: data.recentlyPlayed };
+            if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+            if (typeof data.currentSongStartedAt === 'number') payload.startedAt = data.currentSongStartedAt;
+            if (data.lastShuffle) payload.lastShuffle = data.lastShuffle;
+            if (data.lastAdded) payload.lastAdded = data.lastAdded;
+            void Announcer.updateGuildStatus(guildId, payload);
+          } catch { /* ignore */ }
         });
 
         player.on(AudioPlayerStatus.Paused, () => {
@@ -275,32 +333,37 @@ export class MusicManager {
         });
 
         player.on(AudioPlayerStatus.Idle, async () => {
-          guildData.isPlaying = false;
-          guildData.isPaused = false;
-          
-          // Clean up active stream tracking
-          if (guildData.currentSong) {
-            this.activeStreams.delete(guildData.currentSong.url);
+          const data = this.getGuildData(guildId);
+          data.isPlaying = false;
+          data.isPaused = false;
+
+          // Move current song to recently played
+          if (data.currentSong) {
+            data.recentlyPlayed = data.recentlyPlayed || [];
+            data.recentlyPlayed.unshift(data.currentSong);
+            if (data.recentlyPlayed.length > 6) data.recentlyPlayed = data.recentlyPlayed.slice(0, 6);
+            this.activeStreams.delete(data.currentSong.url);
           }
-          
+
           logEvent('audio_player_idle', { guildId });
-          
+
           // Play next song
           await this.playNext(guildId);
         });
 
         player.on('error', (error) => {
+          const data = this.getGuildData(guildId);
           // Clean up active stream tracking
-          if (guildData.currentSong) {
-            this.activeStreams.delete(guildData.currentSong.url);
+          if (data.currentSong) {
+            this.activeStreams.delete(data.currentSong.url);
           }
-          
+
           logError('Audio player error', error, { 
             guildId, 
-            title: song.title,
-            service: song.service 
+            title: data.currentSong?.title,
+            service: data.currentSong?.service 
           });
-          
+
           // Try to play next song on error
           void this.playNext(guildId);
         });
@@ -385,10 +448,21 @@ export class MusicManager {
     }
     guildData.queue = [];
     guildData.currentSong = null;
+    delete guildData.currentSongStartedAt;
     guildData.isPlaying = false;
     guildData.isPaused = false;
 
     logEvent('music_stopped', { guildId });
+    try { PresenceManager.startIdleCycle(); } catch { /* ignore */ }
+
+    // Reflect stopped state in status message
+    try {
+      const payload: any = { currentSong: null, queue: [] };
+      // Keep lastAdded in footer while idle if available
+      const data = this.getGuildData(guildId);
+      if (data.lastAdded) payload.lastAdded = data.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
   }
 
   skip(guildId: string): void {
@@ -417,7 +491,7 @@ export class MusicManager {
     logEvent('loop_mode_changed', { guildId, mode });
   }
 
-  shuffleQueue(guildId: string): void {
+  shuffleQueue(guildId: string, by?: string, byId?: string): void {
     const guildData = this.getGuildData(guildId);
     
     // Shuffle array using Fisher-Yates algorithm
@@ -430,18 +504,55 @@ export class MusicManager {
       }
     }
     
-    logEvent('queue_shuffled', { guildId, queueLength: guildData.queue.length });
+    // Mark last shuffle meta
+    const ls: any = { by: by || 'alguém', at: Date.now() };
+    if (byId) ls.byId = byId;
+    guildData.lastShuffle = ls;
+    logEvent('queue_shuffled', { guildId, queueLength: guildData.queue.length, by: ls.by });
 
     // Re-evaluate prefetch targets after shuffle
     this.schedulePrefetch(guildId, 250);
+
+    // Update status message after shuffle
+    try {
+      const connection = this.voiceConnections.get(guildId);
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = {
+        currentSong: guildData.currentSong,
+        queue: guildData.queue,
+        recent: guildData.recentlyPlayed,
+      };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
   }
 
   clearQueue(guildId: string): void {
     const guildData = this.getGuildData(guildId);
     const removedCount = guildData.queue.length;
     guildData.queue = [];
+    // Keep recently played as-is here (cleared when truly idle or stop)
     
     logEvent('queue_cleared', { guildId, removedCount });
+
+    // Reflect cleared queue in status message
+    try {
+      const connection = this.voiceConnections.get(guildId);
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = {
+        currentSong: guildData.currentSong,
+        queue: guildData.queue,
+        recent: guildData.recentlyPlayed,
+      };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
   }
 
   // Schedules a prefetch pass for this guild (debounced)
