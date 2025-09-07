@@ -9,6 +9,8 @@ services:
       - ./.env
     environment:
       - NODE_ENV=production
+    # Run container with host-mapped UID/GID to ensure write access on bind mounts
+    user: "${PUID:-1001}:${PGID:-1001}"
     ports:
       - "3001:3001"
     volumes:
