@@ -18,6 +18,10 @@ import {
 } from '../utils/discord';
 import { logEvent, logError } from '../utils/logger';
 import { botConfig } from '../config';
+import { analyzeUrl, detectProvider, detectContentKind } from '../utils/providers';
+import { SpotifyPlaylistProvider } from '../services/providers/SpotifyPlaylistProvider';
+import { TrackResolver } from '../services/TrackResolver';
+import { spawn } from 'child_process';
 
 export default {
   data: new SlashCommandBuilder()
@@ -53,8 +57,54 @@ export default {
         voiceChannel: validationResult.voiceChannel!.name
       });
 
-      // Buscar música
-      const selectedSong = await this.searchMusic(query, musicManager);
+      // Se for URL, tratar provedores diretamente
+      const urlInfo = analyzeUrl(query);
+      const provider = detectProvider(query);
+      const kind = detectContentKind(query);
+
+      let selectedSong: any | null = null;
+
+      if ((provider === 'youtube' || provider === 'ytm') && kind === 'track') {
+        // Canonicalizar para watch URL e pegar metadados via yt-dlp (best-effort)
+        const videoId = urlInfo.videoId;
+        const watchUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : query;
+        selectedSong = await this.fetchYouTubeMeta(watchUrl);
+        if (!selectedSong) {
+          // fallback mínimo
+          selectedSong = { title: watchUrl, url: watchUrl, service: 'youtube' };
+        }
+      } else if (provider === 'spotify' && kind === 'track') {
+        // Pegar metadados do Spotify e resolver para YouTube
+        if (!botConfig.spotify?.enabled) {
+          throw new Error('Spotify não está habilitado no ambiente.');
+        }
+        const sp = new SpotifyPlaylistProvider();
+        const meta = await sp.getTrack(query);
+        if (!meta) {
+          throw new Error('Não consegui obter metadados dessa faixa do Spotify.');
+        }
+        const resolver = new TrackResolver(musicManager.getMultiSourceManager());
+        const payload: { title: string; artists: string[]; durationMs?: number } = {
+          title: meta.title,
+          artists: meta.artists,
+        };
+        if (typeof meta.durationMs === 'number') payload.durationMs = meta.durationMs;
+        const res = await resolver.resolveToYouTube(payload);
+        if (!res) {
+          throw new Error('Não encontrei uma versão tocável dessa música no YouTube.');
+        }
+        selectedSong = {
+          title: res.title,
+          url: res.url,
+          service: 'youtube',
+          duration: typeof res.duration === 'number' ? res.duration : undefined,
+          creator: res.creator || undefined,
+          thumbnail: meta.thumbnailUrl || undefined,
+        };
+      } else {
+        // Buscar música via MultiSource
+        selectedSong = await this.searchMusic(query, musicManager);
+      }
       if (!selectedSong) {
         const embed = createMusaEmbed({
           title: 'Nenhuma Música Encontrada',
@@ -296,5 +346,47 @@ export default {
     });
 
     await safeReply(interaction, { embeds: [embed] });
+  },
+
+  async fetchYouTubeMeta(videoUrl: string): Promise<any | null> {
+    return new Promise((resolve) => {
+      let output = '';
+      let errorOutput = '';
+      const args = [
+        '--dump-json',
+        '--no-warnings',
+        '--skip-download',
+        '--no-check-certificate',
+        videoUrl,
+      ];
+      if (botConfig.ytdlpCookies) {
+        try {
+          const fs = require('fs');
+          if (fs.existsSync(botConfig.ytdlpCookies)) {
+            args.splice(-1, 0, '--cookies', botConfig.ytdlpCookies);
+          }
+        } catch { /* ignore */ }
+      }
+      const p = spawn('yt-dlp', args);
+      p.stdout.on('data', (d) => { output += d.toString(); });
+      p.stderr.on('data', (d) => { errorOutput += d.toString(); });
+      p.on('close', () => {
+        try {
+          const data = JSON.parse(output.trim().split('\n')[0] || '{}');
+          if (!data || !data.title) return resolve({ title: videoUrl, url: videoUrl, service: 'youtube' });
+          return resolve({
+            title: data.title,
+            url: data.webpage_url || videoUrl,
+            duration: data.duration || undefined,
+            creator: data.uploader || data.channel || undefined,
+            thumbnail: data.thumbnail || undefined,
+            service: 'youtube',
+          });
+        } catch {
+          return resolve({ title: videoUrl, url: videoUrl, service: 'youtube' });
+        }
+      });
+      p.on('error', () => resolve({ title: videoUrl, url: videoUrl, service: 'youtube' }));
+    });
   },
 };
