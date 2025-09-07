@@ -35,7 +35,7 @@ export default {
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
     try {
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
 
       const genre = interaction.options.getString('genre', true);
       const member = interaction.member as GuildMember;
@@ -159,7 +159,7 @@ export default {
       };
 
       try {
-        await musicManager.addToQueue(guildId, queuedStation);
+        await musicManager.addToQueue(guildId, queuedStation, member.id);
         addedStations.push(queuedStation);
       } catch (error) {
         logError('Failed to add radio station to queue', error as Error, {

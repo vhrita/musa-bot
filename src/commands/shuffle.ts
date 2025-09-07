@@ -16,6 +16,7 @@ export default {
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
     try {
+      await interaction.deferReply({ ephemeral: true });
       const member = interaction.member as GuildMember;
       const guildId = interaction.guildId!;
 
@@ -62,8 +63,10 @@ export default {
       const queueLengthBefore = guildData.queue.length;
       const firstSongBefore = guildData.queue[0]?.title;
 
-      // Embaralhar a fila
-      musicManager.shuffleQueue(guildId);
+      // Embaralhar a fila (registrando quem acionou)
+      const who = member.displayName || interaction.user.username;
+      const whoId = member.id;
+      musicManager.shuffleQueue(guildId, who, whoId);
 
       // Obter informações após o shuffle
       const firstSongAfter = guildData.queue[0]?.title;

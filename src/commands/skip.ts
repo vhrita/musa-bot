@@ -17,6 +17,7 @@ export default {
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
     try {
+      await interaction.deferReply({ ephemeral: true });
       const member = interaction.member as GuildMember;
       const guildId = interaction.guildId!;
 

@@ -33,7 +33,7 @@ export default {
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
     try {
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
 
       const query = interaction.options.getString('query', true);
       const member = interaction.member as GuildMember;
@@ -173,7 +173,7 @@ export default {
 
     // Adicionar à queue
     try {
-      await musicManager.addToQueue(guildId, queuedSong);
+      await musicManager.addToQueue(guildId, queuedSong, member.id);
     } catch (error) {
       const embed = createMusaEmbed({
         title: 'Erro na Playlist',
