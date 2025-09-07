@@ -6,3 +6,4 @@ export { default as skip } from './skip';
 export { default as queue } from './queue';
 export { default as radio } from './radio';
 export { default as shuffle } from './shuffle';
+export { default as playlist } from './playlist';
