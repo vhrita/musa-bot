@@ -33,6 +33,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 COPY --from=builder /app/dist ./dist
+# Include fallback asset used in embeds
+COPY musa.png ./
 
 # (opcional) manter logs em /app
 RUN mkdir -p /app/logs

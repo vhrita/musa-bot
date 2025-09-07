@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "deploy": "tsx src/deploy-commands.ts",
+    "cleanup:channel": "tsx scripts/cleanupChannel.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "test": "npm run build && jest --runInBand",
