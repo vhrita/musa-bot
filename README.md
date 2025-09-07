@@ -132,14 +132,21 @@ musa-bot/
 
 ## 🎵 Commands Overview
 
-### � Music Commands
-- `/play <song>` - Search and add music to queue
-- `/radio <genre>` - Add radio stations by genre  
-- `/queue` - Display current playlist with rich UI
+### 🎼 Music Commands
+- `/play <query|url>`
+  - Query: searches across sources (YouTube/YouTube Music) and adds the best match
+  - URL YouTube/YouTube Music: plays the video directly (with rich metadata)
+  - URL Spotify (track): fetches metadata via Spotify API and plays the matching version on YouTube
+- `/playlist <url> [limit] [offset] [source]`
+  - Adds an entire playlist from YouTube/YouTube Music/Spotify
+  - Immediate first‑track flush: playback starts as soon as the first resolved item is added
+  - Batch ingestion (tunable), dedupe optional, progress updates and “continue” hint with offset
+- `/radio <genre>` - Add curated radio stations by genre  
+- `/queue` - Display current playlist with rich UI (now + next tracks)
 - `/skip` - Skip to next track
 - `/pause` / `/resume` - Playback control
 - `/stop` - Stop music and clear queue
-- `/shuffle` - Randomize playlist order
+- `/shuffle` - Randomize playlist order (re-evaluates prefetch)
 
 ### 🎨 Visual Features
 - **Purple Embeds**: Musa's signature color scheme
@@ -153,6 +160,20 @@ The bot follows 12‑factor config with a validated schema (Zod). See full, up�
 
 - docs/BOT_CONFIG.md
 - youtube-resolver/README.md (for the Raspberry Pi resolver)
+
+Key highlights (new):
+- Spotify
+  - `ENABLE_SPOTIFY=true`
+  - `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` (Client Credentials)
+  - `SPOTIFY_TIMEOUT_SECONDS` (default 12), `SPOTIFY_MARKET` (default `US`)
+- Playlist ingestion tuning
+  - `YT_PLAYLIST_BATCH` (default 100)
+  - `SPOTIFY_PLAYLIST_BATCH` (default 50)
+  - `SPOTIFY_RESOLVE_CONCURRENCY` (default 4)
+  - `DEDUPE_PLAYLIST` (default true)
+- Resolver/YouTube
+  - `RESOLVER_URL` to use the external resolver
+  - `COOKIES_PATH`/`YTDLP_COOKIES` to enable age-restricted access and richer metadata (thumbnails)
 
 ## 🎯 Gaming Community Legacy
 
@@ -195,6 +216,17 @@ npm test           # Run tests (when implemented)
 - docs/BOT_CONFIG.md — Bot environment variables, defaults and behavior
 - youtube-resolver/README.md — Resolver usage, security and configuration
 - docs/TODO.md — Backlog and follow‑ups
+
+## 🧩 Resolver Notes (YouTube)
+
+- The resolver prefers YouTube Music when supported by `yt-dlp`. If the installed `yt-dlp` doesn't support the `ytmusicsearchN:` pseudo-URL, the resolver automatically disables this preference and falls back to `ytsearch` (YouTube) without spamming errors.
+- For richer metadata (including thumbnails) the resolver avoids `--flat-playlist` for searches, and supports cookies via `COOKIES_PATH`.
+
+## 🎛️ Playlist Ingestion UX
+
+- The first track is flushed immediately for quick playback start; subsequent items are added in batches (see env tuning above).
+- When the queue hits `MAX_QUEUE_SIZE`, the bot shows a friendly message with how to continue using `/playlist` and the suggested `offset`.
+- Dedupe option avoids adding duplicates within the same ingestion when enabled.
 
 ### 🐳 Docker Development
 ```bash

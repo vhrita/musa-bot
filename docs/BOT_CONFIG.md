@@ -24,6 +24,7 @@ Booleans accept `true|false|1|0|yes|no`.
 - `ENABLE_YOUTUBE` (default `false`)
 - `ENABLE_INTERNET_ARCHIVE` (default `true`)
 - `ENABLE_RADIO` (default `true`)
+- `ENABLE_SPOTIFY` (default `false`)
 - Priorities (1 = higher):
   - `YOUTUBE_PRIORITY` (default `3`, 1..10)
   - `INTERNET_ARCHIVE_PRIORITY` (default `2`, 1..10)
@@ -39,6 +40,9 @@ Booleans accept `true|false|1|0|yes|no`.
   - `YTDLP_PROXY`
   - `YOUTUBE_PROXY`
 
+Behavioral notes:
+- The resolver (and bot fallback) prefers YouTube Music for searches when supported by `yt-dlp`. If the installed `yt-dlp` doesn't support the `ytmusicsearchN:` scheme, the preference is automatically disabled and the system falls back to `ytsearch` without noisy errors.
+
 ## Music behavior
 
 - `MAX_QUEUE_SIZE` (default `100`, 1..1000)
@@ -52,6 +56,20 @@ Booleans accept `true|false|1|0|yes|no`.
 - `PREFETCH_COUNT` (default `2`, 0..10)
 - `PREFETCH_ALL` (default `false`)
 - `STREAM_CACHE_TTL_MINUTES` (default `10`, 1..120)
+
+## Playlist ingestion tuning
+
+- `YT_PLAYLIST_BATCH` (default `100`, 1..500): YouTube/YT Music ingestion batch size. The very first track is flushed immediately to start playback faster; this variable controls subsequent flushes.
+- `SPOTIFY_PLAYLIST_BATCH` (default `50`, 1..200): Spotify ingestion batch size after the first flush.
+- `SPOTIFY_RESOLVE_CONCURRENCY` (default `4`, 1..10): How many Spotify tracks are resolved to YouTube concurrently.
+- `DEDUPE_PLAYLIST` (default `true`): Avoid duplicates within the same ingestion session.
+
+## Spotify Web API
+
+- `SPOTIFY_CLIENT_ID` (optional)
+- `SPOTIFY_CLIENT_SECRET` (optional)
+- `SPOTIFY_TIMEOUT_SECONDS` (default `12`)
+- `SPOTIFY_MARKET` (default `US`): two‑letter ISO code (e.g., `BR`, `US`) used when resolving tracks.
 
 ## Logging
 
