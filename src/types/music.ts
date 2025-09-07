@@ -53,6 +53,14 @@ export interface BotConfig {
     internetArchive: ServiceConfig;
     radio: ServiceConfig;
   };
+  // Optional Spotify Web API configuration (Client Credentials)
+  spotify?: {
+    enabled?: boolean;
+    clientId?: string;
+    clientSecret?: string;
+    timeoutMs?: number; // HTTP timeout for Spotify API
+    market?: string; // ISO 3166-1 alpha-2 country code (e.g., US, BR)
+  };
   logging: {
     level: string;
     maxSizeBytes?: number;
@@ -68,6 +76,11 @@ export interface BotConfig {
     prefetchCount?: number; // how many upcoming songs to prefetch
     prefetchAll?: boolean;  // prefetch entire queue (caution)
     streamCacheTTL?: number; // ms TTL for cached stream URLs
+    // Playlist ingestion tuning
+    youtubeBatchSize?: number; // batch size for YouTube playlist ingestion
+    spotifyBatchSize?: number; // batch size for Spotify ingestion
+    spotifyResolveConcurrency?: number; // concurrent resolver jobs for Spotify
+    dedupeOnPlaylist?: boolean; // avoid duplicates while ingesting
   };
 }
 
