@@ -16,6 +16,10 @@ export interface QueuedSong extends MusicSource {
 export interface GuildMusicData {
   queue: QueuedSong[];
   currentSong: QueuedSong | null;
+  currentSongStartedAt?: number; // epoch ms when playback started
+  recentlyPlayed?: QueuedSong[];
+  lastShuffle?: { by: string; byId?: string; at: number };
+  lastAdded?: { by: string; byId?: string; at: number };
   volume: number;
   isPlaying: boolean;
   isPaused: boolean;
