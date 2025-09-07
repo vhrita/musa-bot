@@ -54,6 +54,20 @@ const logger = winston.createLogger({
 // ALLOWED_ORIGINS="https://bot.example.com,https://my.site"
 const allowedOrigins = resolverConfig.allowedOrigins;
 
+// Runtime flag: temporarily suspend cookies after invalidation
+let COOKIES_SUSPENDED_UNTIL = 0; // epoch ms
+function areCookiesSuspended() { return Date.now() < COOKIES_SUSPENDED_UNTIL; }
+function suspendCookiesFor(ms) {
+  COOKIES_SUSPENDED_UNTIL = Math.max(COOKIES_SUSPENDED_UNTIL, Date.now() + ms);
+  try {
+    logger.warn('cookies_suspended', { until: new Date(COOKIES_SUSPENDED_UNTIL).toISOString(), forMs: ms });
+  } catch { /* ignore */ }
+}
+function containsInvalidCookiesError(s) {
+  if (!s) return false;
+  return /(account\s+)?cookies?\s+are\s+no\s+longer\s+valid/i.test(s) || /invalid\s+cookie/i.test(s);
+}
+
 app.use(cors({
   origin: (origin, cb) => {
     // If no origins configured, disable CORS (no headers added)
@@ -238,6 +252,11 @@ function getCookieArgs() {
     return [];
   }
 
+  if (areCookiesSuspended()) {
+    logger.warn('Cookies temporarily disabled due to previous invalidation');
+    return [];
+  }
+
   // If the configured path exists and is writable, use it directly so yt-dlp can persist updates
   try {
     fs.accessSync(srcPath, fs.constants.R_OK | fs.constants.W_OK);
@@ -378,15 +397,19 @@ app.post('/search', rateLimitByIp, async (req, res) => {
           query, 
           error: quickError.message 
         });
-        results = await searchYouTubeEngine('music', query, maxResults).catch(async () => {
-          return await searchYouTubeEngine('default', query, maxResults);
+        results = await searchYouTubeEngine('music', query, maxResults, true).catch(async () => {
+          return await searchYouTubeEngine('default', query, maxResults, true);
         });
       }
     } else {
       // Normal search: first try with Music client, then fallback to default clients
-      results = await searchYouTubeEngine('music', query, maxResults);
+      results = await searchYouTubeEngine('music', query, maxResults, true).catch(async (e) => {
+        // If cookies invalid handled internally, we still get results or error; propagate to fallback by returning []
+        logger.warn('music_client_search_failed_or_empty', { error: e?.message });
+        return [];
+      });
       if (!results || results.length === 0) {
-        results = await searchYouTubeEngine('default', query, maxResults);
+        results = await searchYouTubeEngine('default', query, maxResults, true).catch(async () => []);
       }
     }
     
@@ -1196,7 +1219,7 @@ function searchYouTube(query, maxResults) {
 }
 
 // Prefer YouTube Music or YouTube explicitly for quick mode
-function searchYouTubeQuickEngine(engine, query, maxResults) {
+function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolverConfig.quickSearchCookies) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
     
@@ -1210,7 +1233,7 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
       '--skip-download',
       '--quiet',
       '--ignore-errors',
-      '--socket-timeout', '20',
+      '--socket-timeout', String(resolverConfig.ytdlpSocketTimeoutSec || 20),
       '--max-downloads', maxResults.toString(),
       searchQuery
     ];
@@ -1220,7 +1243,7 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
       ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=web_music,web');
     }
 
-    if (resolverConfig.quickSearchCookies) {
+    if (useCookies && !areCookiesSuspended()) {
       ytDlpArgs.splice(-1, 0, ...getCookieArgs());
     }
 
@@ -1234,16 +1257,27 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       ytDlp.kill('SIGKILL');
-      logger.warn('yt-dlp quick search timed out', { query, timeout: 30000, engine });
-    }, 30000);
+      logger.warn('yt-dlp quick search timed out', { query, timeout: resolverConfig.searchQuickTimeoutMs || 30000, engine });
+    }, resolverConfig.searchQuickTimeoutMs || 30000);
 
     ytDlp.stdout.on('data', (data) => { output += data.toString(); });
     ytDlp.stderr.on('data', (data) => { errorOutput += data.toString(); });
 
-    ytDlp.on('close', (code) => {
+    ytDlp.on('close', async (code) => {
       clearTimeout(timeoutId);
       if (isTimedOut) return reject(new Error('Quick search timed out after 30 seconds'));
       if (code !== 0) {
+        // If cookies invalid, retry once without cookies and suspend
+        if (useCookies && containsInvalidCookiesError(errorOutput)) {
+          suspendCookiesFor(15 * 60 * 1000); // 15 minutes
+          logger.warn('Retrying quick search without cookies after invalidation', { query });
+          try {
+            const res = await searchYouTubeQuickEngine(engine, query, maxResults, false);
+            return resolve(res);
+          } catch (e) {
+            return reject(e);
+          }
+        }
         logger.error('yt-dlp quick search failed', { exitCode: code, error: errorOutput, engine });
         return reject(new Error(errorOutput || `yt-dlp quick search exited with code ${code}`));
       }
@@ -1303,7 +1337,7 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
 }
 
 // Prefer YouTube Music or YouTube explicitly for normal mode
-function searchYouTubeEngine(engine, query, maxResults) {
+function searchYouTubeEngine(engine, query, maxResults, useCookies = true) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
     
@@ -1315,9 +1349,10 @@ function searchYouTubeEngine(engine, query, maxResults) {
       '--geo-bypass',
       '--skip-download',
       '--ignore-errors',
-      '--socket-timeout', '30',
+      '--socket-timeout', String(resolverConfig.ytdlpSocketTimeoutSec || 30),
       '--playlist-end', maxResults.toString(),
-      ...getCookieArgs(),
+      // Attach cookies only when enabled and not suspended
+      ...(useCookies && !areCookiesSuspended() ? getCookieArgs() : []),
       searchQuery
     ];
 
@@ -1331,7 +1366,7 @@ function searchYouTubeEngine(engine, query, maxResults) {
 
     logger.info('Executing yt-dlp search', { command: 'yt-dlp', engine, args: ytDlpArgs });
 
-    const ytDlp = spawn('yt-dlp', ytDlpArgs, { timeout: 25000 });
+    const ytDlp = spawn('yt-dlp', ytDlpArgs); // Let our own timeout control lifecycle
     let output = '';
     let errorOutput = '';
     let isTimedOut = false;
@@ -1339,16 +1374,27 @@ function searchYouTubeEngine(engine, query, maxResults) {
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       ytDlp.kill('SIGKILL');
-      logger.warn('yt-dlp search timed out', { query, timeout: 45000, engine });
-    }, 45000);
+      logger.warn('yt-dlp search timed out', { query, timeout: resolverConfig.searchTimeoutMs || 45000, engine });
+    }, resolverConfig.searchTimeoutMs || 45000);
 
     ytDlp.stdout.on('data', (data) => { output += data.toString(); });
     ytDlp.stderr.on('data', (data) => { errorOutput += data.toString(); });
 
-    ytDlp.on('close', (code) => {
+    ytDlp.on('close', async (code) => {
       clearTimeout(timeoutId);
       if (isTimedOut) return reject(new Error('Search timed out after 45 seconds'));
       if (code !== 0) {
+        // Handle invalid cookies: retry once without cookies and suspend further cookie use
+        if (useCookies && containsInvalidCookiesError(errorOutput)) {
+          suspendCookiesFor(30 * 60 * 1000); // 30 minutes suspension
+          logger.warn('Retrying search without cookies after invalidation', { query, engine });
+          try {
+            const res = await searchYouTubeEngine(engine, query, maxResults, false);
+            return resolve(res);
+          } catch (e) {
+            return reject(e);
+          }
+        }
         logger.error('yt-dlp search failed', { exitCode: code, error: errorOutput, engine });
         return reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));
       }
@@ -1408,13 +1454,13 @@ function searchYouTubeEngine(engine, query, maxResults) {
 
 // Get stream URL using yt-dlp with cookies file
 function getStreamUrl(videoUrl) {
-  return new Promise((resolve, reject) => {
+  const run = (useCookies = true) => new Promise((resolve, reject) => {
     const ytDlpArgs = [
       '--get-url',
       '--format', 'bestaudio[ext=m4a]/bestaudio/best',
       '--no-playlist',
-      '--socket-timeout', '90',  // Increased timeout for stream resolution
-      ...getCookieArgs(),  // Add cookies if available
+      '--socket-timeout', String(resolverConfig.ytdlpSocketTimeoutSec || 45),
+      ...(useCookies && !areCookiesSuspended() ? getCookieArgs() : []),
       videoUrl
     ];
 
@@ -1429,37 +1475,30 @@ function getStreamUrl(videoUrl) {
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       ytDlp.kill('SIGKILL');
-      logger.warn('yt-dlp stream timed out', { videoUrl, timeout: 90000 });
-    }, 90000);  // 90 seconds for stream resolution
+      logger.warn('yt-dlp stream timed out', { videoUrl, timeout: resolverConfig.streamTimeoutMs || 90000 });
+    }, resolverConfig.streamTimeoutMs || 90000);
 
-    ytDlp.stdout.on('data', (data) => {
-      output += data.toString();
-    });
+    ytDlp.stdout.on('data', (data) => { output += data.toString(); });
+    ytDlp.stderr.on('data', (data) => { errorOutput += data.toString(); });
 
-    ytDlp.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-
-    ytDlp.on('close', (code) => {
+    ytDlp.on('close', async (code) => {
       clearTimeout(timeoutId);
       
-      if (isTimedOut) {
-        reject(new Error('Stream resolution timed out after 90 seconds'));
-        return;
-      }
+      if (isTimedOut) return reject(new Error('Stream resolution timed out after 90 seconds'));
 
       if (code !== 0) {
+        if (useCookies && containsInvalidCookiesError(errorOutput)) {
+          suspendCookiesFor(30 * 60 * 1000);
+          logger.warn('Retrying stream without cookies after invalidation');
+          try { return resolve(await run(false)); } catch (e) { return reject(e); }
+        }
         logger.error('yt-dlp stream failed', { exitCode: code, error: errorOutput });
-        reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));
-        return;
+        return reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));
       }
 
       const streamUrl = output.trim().split('\n')[0];
-      if (streamUrl?.startsWith('http')) {
-        resolve(streamUrl);
-      } else {
-        resolve(null);
-      }
+      if (streamUrl?.startsWith('http')) return resolve(streamUrl);
+      return resolve(null);
     });
 
     ytDlp.on('error', (error) => {
@@ -1467,6 +1506,8 @@ function getStreamUrl(videoUrl) {
       reject(error);
     });
   });
+
+  return run(true);
 }
 
 app.listen(port, () => {

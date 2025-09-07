@@ -49,6 +49,12 @@ function loadConfig() {
 
     // Trust proxy (for correct req.ip behind reverse proxies)
     trustProxy: bool('TRUST_PROXY', false),
+
+    // Timeouts and yt-dlp tuning
+    searchQuickTimeoutMs: intInRange('SEARCH_QUICK_TIMEOUT_MS', 45_000, 5_000, 300_000),
+    searchTimeoutMs: intInRange('SEARCH_TIMEOUT_MS', 90_000, 10_000, 600_000),
+    streamTimeoutMs: intInRange('STREAM_TIMEOUT_MS', 120_000, 10_000, 600_000),
+    ytdlpSocketTimeoutSec: intInRange('YTDLP_SOCKET_TIMEOUT_SECONDS', 45, 5, 300),
   };
 
   // Basic validation
