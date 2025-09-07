@@ -4,6 +4,8 @@ import path from 'path';
 import { botConfig } from './config';
 import { logger } from './utils/logger';
 import { MusicManager } from './services/MusicManager';
+import { PresenceManager } from './services/PresenceManager';
+import { Announcer } from './services/Announcer';
 
 const client = new Client({
     intents: [
@@ -20,6 +22,9 @@ client.commands = new Collection();
 // Initialize music manager
 const musicManager = new MusicManager();
 client.musicManager = musicManager;
+// Wire client to helpers that need it
+PresenceManager.setClient(client);
+Announcer.setClient(client);
 
 // Load commands
 const loadCommands = async () => {
