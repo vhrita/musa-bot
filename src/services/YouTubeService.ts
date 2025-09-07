@@ -5,6 +5,8 @@ import { spawn } from 'child_process';
 import { botConfig } from '../config';
 
 export class YouTubeService extends BaseMusicService {
+  // Disable YT Music engine if unsupported by yt-dlp
+  private static ytmSupported = true;
   constructor(priority: number, enabled: boolean) {
     super('youtube' as ServiceType, priority, enabled);
   }
@@ -15,17 +17,15 @@ export class YouTubeService extends BaseMusicService {
     }
 
     try {
-      logEvent('youtube_search_started', {
-        query,
-        maxResults
-      });
+      logEvent('youtube_search_started', { query, maxResults, prefer: 'ytmusic' });
 
-      const results = await this.searchWithYtDlp(query, maxResults);
+      // Prefer YouTube Music results; fallback to regular YouTube search
+      const ytMusicResults = await this.searchWithYtDlp(query, maxResults, 'ytm');
+      const results = ytMusicResults.length > 0
+        ? ytMusicResults
+        : await this.searchWithYtDlp(query, maxResults, 'yt');
 
-      logEvent('youtube_search_completed', {
-        query,
-        resultsCount: results.length
-      });
+      logEvent('youtube_search_completed', { query, resultsCount: results.length, used: ytMusicResults.length > 0 ? 'ytmusic' : 'youtube' });
 
       return results;
 
@@ -38,9 +38,13 @@ export class YouTubeService extends BaseMusicService {
     }
   }
 
-  private async searchWithYtDlp(query: string, maxResults: number): Promise<MusicSource[]> {
+  private async searchWithYtDlp(query: string, maxResults: number, engine: 'yt' | 'ytm' = 'yt'): Promise<MusicSource[]> {
     return new Promise((resolve) => {
-      const searchQuery = `ytsearch${maxResults}:${query}`;
+      if (engine === 'ytm' && !YouTubeService.ytmSupported) {
+        return resolve([]);
+      }
+      const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
+      const searchQuery = `${prefix}${maxResults}:${query}`;
       
               // Use yt-dlp to search for videos
         const ytDlpArgs = [
@@ -116,7 +120,8 @@ export class YouTubeService extends BaseMusicService {
       logEvent('youtube_ytdlp_command', {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
-        query
+        query,
+        engine
       });
       
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
@@ -134,12 +139,16 @@ export class YouTubeService extends BaseMusicService {
 
       ytDlp.on('close', (code) => {
         if (code !== 0) {
-          logError('yt-dlp search failed', new Error(errorOutput), {
-            query,
-            exitCode: code
-          });
-          resolve([]);
-          return;
+          // Detect unsupported ytmusic scheme and permanently disable
+          if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
+            if (YouTubeService.ytmSupported) {
+              YouTubeService.ytmSupported = false;
+              logEvent('ytmusicsearch_unsupported_disabled');
+            }
+            return resolve([]);
+          }
+          logError('yt-dlp search failed', new Error(errorOutput), { query, exitCode: code });
+          return resolve([]);
         }
 
         try {
@@ -161,10 +170,8 @@ export class YouTubeService extends BaseMusicService {
                 const v = url.searchParams.get('v');
                 return !!(v && v.length === 11);
               }
-              if (url.pathname.startsWith('/shorts/')) {
-                const id = url.pathname.split('/')[2] || '';
-                return id.length === 11;
-              }
+              // Avoid shorts
+              if (url.pathname.startsWith('/shorts/')) return false;
               return false;
             } catch {
               return false;

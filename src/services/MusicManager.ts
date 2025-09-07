@@ -26,7 +26,7 @@ export class MusicManager {
   private readonly multiSourceManager: MultiSourceManager;
   
   // Stream URL pre-caching system
-  private readonly streamCache = new Map<string, { url: string; timestamp: number }>();
+  private readonly streamCache = new Map<string, { url: string; timestamp: number; expiresAt?: number }>();
   private readonly streamCacheTTL = botConfig.music.streamCacheTTL ?? 10 * 60 * 1000; // default 10 minutes
   private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded
   private readonly activeStreams = new Set<string>(); // Track active streaming URLs
@@ -186,6 +186,62 @@ export class MusicManager {
     if (!guildData.isPlaying && !guildData.currentSong) {
       await this.playNext(guildId);
     }
+  }
+
+  // Batch-add songs to queue with a single status update and prefetch scheduling
+  async addManyToQueue(guildId: string, songs: QueuedSong[], requestedById?: string): Promise<number> {
+    const guildData = this.getGuildData(guildId);
+
+    if (!Array.isArray(songs) || songs.length === 0) return 0;
+
+    const remainingCapacity = Math.max(0, botConfig.music.maxQueueSize - guildData.queue.length);
+    const toAdd = songs.slice(0, remainingCapacity);
+
+    if (toAdd.length === 0) {
+      throw new Error(`🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`);
+    }
+
+    // Push all items
+    for (const s of toAdd) guildData.queue.push(s);
+
+    // Track last added meta for footer using the last item
+    const last = toAdd[toAdd.length - 1];
+    if (last) {
+      guildData.lastAdded = { by: last.requestedBy, at: Date.now(), ...(requestedById ? { byId: requestedById } : {}) } as any;
+    }
+
+    logEvent('songs_added_to_queue_batch', {
+      guildId,
+      added: toAdd.length,
+      requestedBy: last ? last.requestedBy : 'alguém',
+      queueLength: guildData.queue.length
+    });
+
+    // Schedule a single prefetch pass
+    this.schedulePrefetch(guildId);
+
+    // Update status message once
+    try {
+      const connection = this.voiceConnections.get(guildId);
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = {
+        currentSong: guildData.currentSong,
+        queue: guildData.queue,
+        recent: guildData.recentlyPlayed,
+      };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
+
+    // Start playing if nothing is currently playing
+    if (!guildData.isPlaying && !guildData.currentSong) {
+      await this.playNext(guildId);
+    }
+
+    return toAdd.length;
   }
 
   async playNext(guildId: string): Promise<void> {
@@ -588,8 +644,15 @@ export class MusicManager {
       if (this.activeStreams.has(song.url)) continue;
       // Skip if cached and fresh
       const cached = this.streamCache.get(song.url);
-      if (cached && Date.now() - cached.timestamp < this.streamCacheTTL * 0.8) {
-        continue; // fresh enough
+      if (cached) {
+        const freshByTtl = Date.now() - cached.timestamp < this.streamCacheTTL * 0.8;
+        const nearExpire = typeof cached.expiresAt === 'number' ? (cached.expiresAt - Date.now() < 5 * 60 * 1000) : false;
+        if (freshByTtl && !nearExpire) {
+          continue; // fresh enough and not expiring soon
+        }
+        if (nearExpire) {
+          logEvent('stream_cache_near_expire', { url: song.url, inSeconds: Math.max(0, Math.round((cached.expiresAt! - Date.now())/1000)) });
+        }
       }
       try {
         await this.preloadStreamUrl(song);
@@ -1018,29 +1081,43 @@ export class MusicManager {
   private cleanupStreamCache(): void {
     const now = Date.now();
     for (const [key, cache] of this.streamCache.entries()) {
-      if (now - cache.timestamp > this.streamCacheTTL) {
+      const ttlExpired = now - cache.timestamp > this.streamCacheTTL;
+      const urlExpired = typeof cache.expiresAt === 'number' ? now > cache.expiresAt : false;
+      if (ttlExpired || urlExpired) {
         this.streamCache.delete(key);
-        logEvent('stream_cache_expired', { url: key });
+        logEvent('stream_cache_expired', { url: key, reason: urlExpired ? 'url_expired' : 'ttl' });
       }
     }
   }
 
   private getCachedStreamUrl(songUrl: string): string | null {
     const cache = this.streamCache.get(songUrl);
-    if (cache && Date.now() - cache.timestamp < this.streamCacheTTL) {
-      logEvent('stream_cache_hit', { url: songUrl });
-      return cache.url;
+    if (cache) {
+      const ttlOk = Date.now() - cache.timestamp < this.streamCacheTTL;
+      const notNearExpire = typeof cache.expiresAt === 'number' ? (cache.expiresAt - Date.now() >= 60 * 1000) : true; // at least 60s left
+      if (ttlOk && notNearExpire) {
+        logEvent('stream_cache_hit', { url: songUrl });
+        return cache.url;
+      }
+      logEvent('stream_cache_stale', { url: songUrl, reason: ttlOk ? 'near_expire' : 'ttl' });
     }
     return null;
   }
 
   private setCachedStreamUrl(songUrl: string, streamUrl: string): void {
-    this.streamCache.set(songUrl, {
+    const meta = this.sanitizeStreamMeta(streamUrl);
+    const entry: { url: string; timestamp: number; expiresAt?: number } = {
       url: streamUrl,
       timestamp: Date.now()
-    });
-    const meta = this.sanitizeStreamMeta(streamUrl);
-    logEvent('stream_cache_set', { songUrl, ...meta });
+    };
+    if (typeof meta.expire === 'number' && Number.isFinite(meta.expire)) {
+      try {
+        const asMs = meta.expire > 1e12 ? meta.expire : meta.expire * 1000; // seconds → ms when needed
+        entry.expiresAt = asMs;
+      } catch { /* ignore parse issues */ }
+    }
+    this.streamCache.set(songUrl, entry);
+    logEvent('stream_cache_set', { songUrl, ...meta, hasExpiresAt: !!entry.expiresAt });
   }
 
   // (Old disabled preload code removed and replaced by prefetchUpcoming/preloadStreamUrl)

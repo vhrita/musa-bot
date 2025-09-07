@@ -7,6 +7,7 @@ import { spawn } from 'child_process';
 
 export class ResolverYouTubeService extends BaseMusicService {
   private readonly resolverUrl: string;
+  private static ytmSupported = true;
 
   constructor(priority: number = 1, enabled: boolean = true) {
     super('youtube', priority, enabled);
@@ -69,13 +70,18 @@ export class ResolverYouTubeService extends BaseMusicService {
 
   private async searchWithDirectYtDlp(query: string, maxResults: number): Promise<MusicSource[]> {
     return new Promise((resolve) => {
-      const searchQuery = `ytsearch${maxResults}:${query}`;
+      // Prefer YouTube Music first, then fallback to regular YouTube
+      const trySearch = (engine: 'ytm' | 'yt') => new Promise<MusicSource[]>((res) => {
+        if (engine === 'ytm' && !ResolverYouTubeService.ytmSupported) return res([]);
+        const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
+        const searchQuery = `${prefix}${maxResults}:${query}`;
       
-      logEvent('resolver_youtube_search_started', {
-        query,
-        maxResults,
-        method: 'direct_ytdlp'
-      });
+        logEvent('resolver_youtube_search_started', {
+          query,
+          maxResults,
+          method: 'direct_ytdlp',
+          engine
+        });
       
       // Use optimized yt-dlp flags as fallback (same as resolver)
       const ytDlpArgs = [
@@ -84,7 +90,6 @@ export class ResolverYouTubeService extends BaseMusicService {
         '--no-playlist',
         '--no-check-certificate', 
         '--geo-bypass',
-        '--flat-playlist',
         '--skip-download',
         '--quiet',
         '--ignore-errors',
@@ -117,51 +122,50 @@ export class ResolverYouTubeService extends BaseMusicService {
         logEvent('resolver_ytdlp_no_cookies', { query });
       }
 
-      logEvent('resolver_youtube_ytdlp_command', {
-        command: 'yt-dlp',
-        args: ytDlpArgs.join(' '),
-        query,
-        method: 'direct_ytdlp'
-      });
+        logEvent('resolver_youtube_ytdlp_command', {
+          command: 'yt-dlp',
+          args: ytDlpArgs.join(' '),
+          query,
+          method: 'direct_ytdlp',
+          engine
+        });
       
-      const ytDlp = spawn('yt-dlp', ytDlpArgs);
+        const ytDlp = spawn('yt-dlp', ytDlpArgs);
       let output = '';
       let errorOutput = '';
       let isTimedOut = false;
 
       // Add timeout for direct yt-dlp as well
-      const timeoutId = setTimeout(() => {
+        const timeoutId = setTimeout(() => {
         isTimedOut = true;
         ytDlp.kill('SIGKILL');
-        logEvent('resolver_ytdlp_timeout', { query, timeout: 30000 });
-      }, 30000);
+          logEvent('resolver_ytdlp_timeout', { query, timeout: 30000, engine });
+        }, 30000);
 
-      ytDlp.stdout.on('data', (data) => {
+        ytDlp.stdout.on('data', (data) => {
         output += data.toString();
-      });
+        });
 
-      ytDlp.stderr.on('data', (data) => {
+        ytDlp.stderr.on('data', (data) => {
         errorOutput += data.toString();
-      });
+        });
 
-      ytDlp.on('close', (code) => {
-        clearTimeout(timeoutId);
-        
-        if (isTimedOut) {
-          logEvent('resolver_ytdlp_timed_out', { query });
-          resolve([]);
-          return;
-        }
+        ytDlp.on('close', (code) => {
+          clearTimeout(timeoutId);
+          
+          if (isTimedOut) { logEvent('resolver_ytdlp_timed_out', { query, engine }); return res([]); }
 
-        if (code !== 0) {
-          logError('Direct yt-dlp search failed', new Error(errorOutput), {
-            query,
-            exitCode: code,
-            method: 'direct_ytdlp'
-          });
-          resolve([]);
-          return;
-        }
+          if (code !== 0) {
+            if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
+              if (ResolverYouTubeService.ytmSupported) {
+                ResolverYouTubeService.ytmSupported = false;
+                logEvent('ytmusicsearch_unsupported_disabled');
+              }
+              return res([]);
+            }
+            logError('Direct yt-dlp search failed', new Error(errorOutput), { query, exitCode: code, method: 'direct_ytdlp', engine });
+            return res([]);
+          }
 
         const results: MusicSource[] = [];
         const lines = output.trim().split('\n');
@@ -181,10 +185,8 @@ export class ResolverYouTubeService extends BaseMusicService {
               const v = url.searchParams.get('v');
               return !!(v && v.length === 11);
             }
-            if (url.pathname.startsWith('/shorts/')) {
-              const id = url.pathname.split('/')[2] || '';
-              return id.length === 11;
-            }
+            // Avoid shorts
+            if (url.pathname.startsWith('/shorts/')) return false;
             return false;
           } catch {
             return false;
@@ -216,27 +218,37 @@ export class ResolverYouTubeService extends BaseMusicService {
             // Skip malformed JSON lines - log error for debugging
             logError('Failed to parse yt-dlp JSON output line', parseError as Error, {
               line: line.substring(0, 100) + (line.length > 100 ? '...' : ''),
-              method: 'direct_ytdlp'
+              method: 'direct_ytdlp',
+              engine
             });
             continue;
           }
         }
 
-        logEvent('resolver_youtube_search_completed', {
-          query,
-          resultsCount: results.length,
-          method: 'direct_ytdlp'
+          logEvent('resolver_youtube_search_completed', {
+            query,
+            resultsCount: results.length,
+            method: 'direct_ytdlp',
+            engine
+          });
+
+          res(results);
         });
 
-        resolve(results);
+        ytDlp.on('error', (error) => {
+          logError('Direct yt-dlp process error', error, { 
+            query,
+            method: 'direct_ytdlp',
+            engine
+          });
+          res([]);
+        });
       });
 
-      ytDlp.on('error', (error) => {
-        logError('Direct yt-dlp process error', error, { 
-          query,
-          method: 'direct_ytdlp'
-        });
-        resolve([]);
+      // Execute with YT Music first, fallback to regular YouTube
+      trySearch('ytm').then((list) => {
+        if (list.length > 0) return resolve(list);
+        return trySearch('yt').then(resolve);
       });
     });
   }
