@@ -1,0 +1,35 @@
+{
+  "ready": [
+    "🎵 A sinfonia começa! Estou aqui para embalar nossos momentos com música! ✨",
+    "🎶 Que a harmonia nos guie! Pronta para tocar as melodias dos nossos corações! 💜",
+    "🎤 O palco está montado e eu estou afinada! Vamos fazer música juntos! 🎸"
+  ],
+  "playing": [
+    "🎵 Que essa melodia embale nossos corações no ritmo perfeito! ✨",
+    "🎶 Deixe a música fluir como uma cascata de notas mágicas! 💜",
+    "🎤 Agora tocando no teatro da nossa amizade musical! 🎭"
+  ],
+  "added": [
+    "🎵 Mais uma nota adicionada à nossa sinfonia! O show deve continuar! ✨",
+    "🎶 Sua escolha foi afinada perfeitamente na nossa playlist! 💜",
+    "🎤 Essa música vai fazer nossos corações baterem no mesmo compasso! 🥁"
+  ],
+  "stopped": [
+    "🎵 O último acorde foi tocado... até a próxima apresentação! ✨",
+    "🎶 A cortina se fecha, mas a música permanece em nossos corações! 💜",
+    "🎤 Silêncio... para que a próxima melodia soe ainda mais doce! 🎭"
+  ],
+  "error": [
+    "🎵 Ops! Parece que uma corda desafinou... vamos tentar novamente! 💫",
+    "🎶 Uma pequena dissonância no ar... mas logo voltamos ao ritmo! 💜",
+    "🎤 Até as melhores apresentações têm seus improvisos! Vamos lá! ✨"
+  ],
+  "idle": [
+    "🔇 Um silêncio ensurdecedor toma o palco...", 
+    "🌫️ As notas estão tímidas hoje...", 
+    "🕯️ O teatro aguarda a próxima canção...", 
+    "🌙 O vento sussurra, mas a música ainda dorme...", 
+    "🕰️ O tempo passa devagar sem uma melodia..."
+  ]
+}
+
