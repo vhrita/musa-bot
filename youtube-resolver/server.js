@@ -22,6 +22,9 @@ const searchCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes (reduced)
 const MAX_CACHE_SIZE = 20; // Reduced cache for Pi 3
 
+// Capability detection: some yt-dlp builds do not support "ytmusicsearchN:" pseudo-URL
+let YT_MUSIC_SEARCH_SUPPORTED = true;
+
 // Rate limiting and circuit breaker
 const activeCalls = new Map(); // Track active calls by URL
 const urlQueues = new Map(); // Queue pending requests per URL
@@ -353,20 +356,29 @@ app.post('/search', rateLimitByIp, async (req, res) => {
   try {
     let results;
     
-    // Try quick search first if enabled
+    // Try quick search first if enabled (prefer YouTube Music)
     if (quickMode) {
       try {
-        results = await searchYouTubeQuick(query, maxResults);
-        logger.info('Quick search completed successfully', { query, resultsCount: results.length });
+        results = await searchYouTubeQuickEngine('ytm', query, maxResults);
+        if (!results || results.length === 0) {
+          results = await searchYouTubeQuickEngine('yt', query, maxResults);
+        }
+        logger.info('Quick search completed', { query, resultsCount: results.length, preferred: 'ytmusic' });
       } catch (quickError) {
         logger.warn('Quick search failed, falling back to normal search', { 
           query, 
           error: quickError.message 
         });
-        results = await searchYouTube(query, maxResults);
+        results = await searchYouTubeEngine('ytm', query, maxResults).catch(async () => {
+          return await searchYouTubeEngine('yt', query, maxResults);
+        });
       }
     } else {
-      results = await searchYouTube(query, maxResults);
+      // Normal search (prefer YouTube Music)
+      results = await searchYouTubeEngine('ytm', query, maxResults);
+      if (!results || results.length === 0) {
+        results = await searchYouTubeEngine('yt', query, maxResults);
+      }
     }
     
     // Final defense: filter out non-video YouTube URLs from results
@@ -384,10 +396,8 @@ app.post('/search', rateLimitByIp, async (req, res) => {
           const v = url.searchParams.get('v');
           return !!(v && v.length === 11);
         }
-        if (url.pathname.startsWith('/shorts/')) {
-          const id = url.pathname.split('/')[2] || '';
-          return id.length === 11;
-        }
+        // Avoid shorts in results
+        if (url.pathname.startsWith('/shorts/')) return false;
         return false;
       } catch {
         return false;
@@ -933,7 +943,6 @@ function searchYouTubeQuick(query, maxResults) {
       '--no-playlist',
       '--no-check-certificate',
       '--geo-bypass',
-      '--flat-playlist',        // Re-added - excellent for speed
       '--skip-download',
       '--quiet',
       '--ignore-errors',
@@ -1002,10 +1011,8 @@ function searchYouTubeQuick(query, maxResults) {
             const v = url.searchParams.get('v');
             return !!(v && v.length === 11);
           }
-          if (url.pathname.startsWith('/shorts/')) {
-            const id = url.pathname.split('/')[2] || '';
-            return id.length === 11;
-          }
+          // Avoid shorts
+          if (url.pathname.startsWith('/shorts/')) return false;
           return false;
         } catch {
           return false;
@@ -1174,6 +1181,229 @@ function searchYouTube(query, maxResults) {
 
     ytDlp.on('error', (error) => {
       logger.error('yt-dlp process error', { error: error.message });
+      reject(error);
+    });
+  });
+}
+
+// Prefer YouTube Music or YouTube explicitly for quick mode
+function searchYouTubeQuickEngine(engine, query, maxResults) {
+  return new Promise((resolve, reject) => {
+    if (engine === 'ytm' && !YT_MUSIC_SEARCH_SUPPORTED) {
+      // Skip YT Music engine if we already detected it's unsupported
+      return resolve([]);
+    }
+    const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
+    const searchQuery = `${prefix}${maxResults}:${query}`;
+    
+    // Optimized args for speed
+    const ytDlpArgs = [
+      '--dump-json',
+      '--default-search', 'ytsearch',
+      '--no-playlist',
+      '--no-check-certificate',
+      '--geo-bypass',
+      '--skip-download',
+      '--quiet',
+      '--ignore-errors',
+      '--socket-timeout', '20',
+      '--max-downloads', maxResults.toString(),
+      searchQuery
+    ];
+
+    if (resolverConfig.quickSearchCookies) {
+      ytDlpArgs.splice(-1, 0, ...getCookieArgs());
+    }
+
+    logger.info('Executing yt-dlp quick search', { command: 'yt-dlp', engine, args: ytDlpArgs });
+
+    const ytDlp = spawn('yt-dlp', ytDlpArgs);
+    let output = '';
+    let errorOutput = '';
+    let isTimedOut = false;
+
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      ytDlp.kill('SIGKILL');
+      logger.warn('yt-dlp quick search timed out', { query, timeout: 30000, engine });
+    }, 30000);
+
+    ytDlp.stdout.on('data', (data) => { output += data.toString(); });
+    ytDlp.stderr.on('data', (data) => { errorOutput += data.toString(); });
+
+    ytDlp.on('close', (code) => {
+      clearTimeout(timeoutId);
+      if (isTimedOut) return reject(new Error('Quick search timed out after 30 seconds'));
+      if (code !== 0) {
+        // If ytmusic scheme is not supported by current yt-dlp build, disable permanently
+        if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
+          if (YT_MUSIC_SEARCH_SUPPORTED) {
+            YT_MUSIC_SEARCH_SUPPORTED = false;
+            logger.warn('ytmusicsearch not supported by yt-dlp; disabling YT Music preference');
+          }
+          return resolve([]);
+        }
+        logger.error('yt-dlp quick search failed', { exitCode: code, error: errorOutput, engine });
+        return reject(new Error(errorOutput || `yt-dlp quick search exited with code ${code}`));
+      }
+
+      const results = [];
+      const lines = output.trim().split('\n');
+      const isVideoUrl = (u) => {
+        try {
+          const url = new URL(u);
+          const host = url.hostname.toLowerCase();
+          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+          if (!isYt) return false;
+          if (host === 'youtu.be') {
+            const id = url.pathname.replace(/^\//, '');
+            return id && id.length === 11;
+          }
+          if (url.pathname === '/watch') {
+            const v = url.searchParams.get('v');
+            return !!(v && v.length === 11);
+          }
+          if (url.pathname.startsWith('/shorts/')) return false;
+          return false;
+        } catch { return false; }
+      };
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const videoData = JSON.parse(line);
+          if (videoData?.id && videoData?.title) {
+            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            if (!isVideoUrl(candidateUrl)) continue;
+            results.push({
+              title: videoData.title,
+              creator: videoData.uploader || 'Unknown Artist',
+              duration: videoData.duration || 0,
+              url: candidateUrl,
+              thumbnail: videoData.thumbnail || '',
+              service: 'youtube'
+            });
+          }
+        } catch (parseError) {
+          logger.warn('Failed to parse yt-dlp quick search JSON output', { error: parseError.message, line: line.substring(0, 100) });
+          continue;
+        }
+      }
+
+      resolve(results);
+    });
+
+    ytDlp.on('error', (error) => {
+      clearTimeout(timeoutId);
+      logger.error('yt-dlp quick search process error', { error: error.message, engine });
+      reject(error);
+    });
+  });
+}
+
+// Prefer YouTube Music or YouTube explicitly for normal mode
+function searchYouTubeEngine(engine, query, maxResults) {
+  return new Promise((resolve, reject) => {
+    if (engine === 'ytm' && !YT_MUSIC_SEARCH_SUPPORTED) {
+      // Skip YT Music engine if unsupported
+      return resolve([]);
+    }
+    const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
+    const searchQuery = `${prefix}${maxResults}:${query}`;
+    
+    const ytDlpArgs = [
+      '--dump-json',
+      '--default-search', 'ytsearch',
+      '--no-playlist',
+      '--no-check-certificate',
+      '--geo-bypass',
+      '--skip-download',
+      '--ignore-errors',
+      '--socket-timeout', '30',
+      '--playlist-end', maxResults.toString(),
+      ...getCookieArgs(),
+      searchQuery
+    ];
+
+    logger.info('Executing yt-dlp search', { command: 'yt-dlp', engine, args: ytDlpArgs });
+
+    const ytDlp = spawn('yt-dlp', ytDlpArgs, { timeout: 25000 });
+    let output = '';
+    let errorOutput = '';
+    let isTimedOut = false;
+
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      ytDlp.kill('SIGKILL');
+      logger.warn('yt-dlp search timed out', { query, timeout: 45000, engine });
+    }, 45000);
+
+    ytDlp.stdout.on('data', (data) => { output += data.toString(); });
+    ytDlp.stderr.on('data', (data) => { errorOutput += data.toString(); });
+
+    ytDlp.on('close', (code) => {
+      clearTimeout(timeoutId);
+      if (isTimedOut) return reject(new Error('Search timed out after 45 seconds'));
+      if (code !== 0) {
+        if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
+          if (YT_MUSIC_SEARCH_SUPPORTED) {
+            YT_MUSIC_SEARCH_SUPPORTED = false;
+            logger.warn('ytmusicsearch not supported by yt-dlp; disabling YT Music preference');
+          }
+          return resolve([]);
+        }
+        logger.error('yt-dlp search failed', { exitCode: code, error: errorOutput, engine });
+        return reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));
+      }
+
+      const results = [];
+      const lines = output.trim().split('\n');
+      const isVideoUrl = (u) => {
+        try {
+          const url = new URL(u);
+          const host = url.hostname.toLowerCase();
+          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+          if (!isYt) return false;
+          if (host === 'youtu.be') {
+            const id = url.pathname.replace(/^\//, '');
+            return id && id.length === 11;
+          }
+          if (url.pathname === '/watch') {
+            const v = url.searchParams.get('v');
+            return !!(v && v.length === 11);
+          }
+          if (url.pathname.startsWith('/shorts/')) return false;
+          return false;
+        } catch { return false; }
+      };
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const videoData = JSON.parse(line);
+          if (videoData?.id && videoData?.title) {
+            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+            if (!isVideoUrl(candidateUrl)) continue;
+            results.push({
+              title: videoData.title,
+              creator: videoData.uploader || 'Unknown Artist',
+              duration: videoData.duration || 0,
+              url: candidateUrl,
+              thumbnail: videoData.thumbnail || '',
+              service: 'youtube'
+            });
+          }
+        } catch (parseError) {
+          logger.warn('Failed to parse yt-dlp JSON output', { error: parseError.message, line: line.substring(0, 100) });
+          continue;
+        }
+      }
+
+      resolve(results);
+    });
+
+    ytDlp.on('error', (error) => {
+      logger.error('yt-dlp process error', { error: error.message, engine });
       reject(error);
     });
   });
