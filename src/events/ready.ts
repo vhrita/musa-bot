@@ -1,6 +1,7 @@
 import { Client, Events } from 'discord.js';
 import { logEvent } from '../utils/logger';
 import { getRandomPhrase } from '../utils/discord';
+import { PresenceManager } from '../services/PresenceManager';
 
 export default {
   name: Events.ClientReady,
@@ -19,22 +20,12 @@ export default {
       userCount: client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0)
     });
 
-    // Definir status da Musa
+    // Iniciar presença ociosa rotativa (frases de silêncio) até que uma faixa comece
     try {
-      client.user?.setPresence({
-        status: 'online',
-        activities: [{
-          name: 'melodias encantadas ✨',
-          type: 2, // LISTENING
-        }]
-      });
-
-      logEvent('bot_presence_set', {
-        status: 'online',
-        activity: 'melodias encantadas ✨'
-      });
+      PresenceManager.startIdleCycle();
+      logEvent('bot_presence_idle_cycle_started', {});
     } catch (error) {
-      console.error('Erro ao definir presença:', error);
+      console.error('Erro ao iniciar presença ociosa:', error);
     }
   },
 };
