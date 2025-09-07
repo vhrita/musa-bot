@@ -50,6 +50,7 @@ const EnvSchema = z.object({
   ENABLE_YOUTUBE: bool().optional().default(false),
   ENABLE_INTERNET_ARCHIVE: bool().optional().default(true),
   ENABLE_RADIO: bool().optional().default(true),
+  ENABLE_SPOTIFY: bool().optional().default(false),
 
   YOUTUBE_PRIORITY: intInRange(1, 10, 3).optional().default(3),
   INTERNET_ARCHIVE_PRIORITY: intInRange(1, 10, 2).optional().default(2),
@@ -65,6 +66,17 @@ const EnvSchema = z.object({
   PREFETCH_COUNT: intInRange(0, 10, 2).optional().default(2),
   PREFETCH_ALL: bool().optional().default(false),
   STREAM_CACHE_TTL_MINUTES: intInRange(1, 120, 10).optional().default(10),
+  // Playlist ingestion tuning
+  YT_PLAYLIST_BATCH: intInRange(1, 500, 100).optional().default(100),
+  SPOTIFY_PLAYLIST_BATCH: intInRange(1, 200, 50).optional().default(50),
+  SPOTIFY_RESOLVE_CONCURRENCY: intInRange(1, 10, 4).optional().default(4),
+  DEDUPE_PLAYLIST: bool().optional().default(true),
+
+  // Spotify Web API (Client Credentials)
+  SPOTIFY_CLIENT_ID: z.string().optional(),
+  SPOTIFY_CLIENT_SECRET: z.string().optional(),
+  SPOTIFY_TIMEOUT_SECONDS: intInRange(1, 120, 12).optional().default(12),
+  SPOTIFY_MARKET: z.string().optional().default('US'),
 
   LOG_LEVEL: z.string().optional(),
   LOG_MAX_SIZE_MB: intInRange(1, 200, 10).optional().default(10),
@@ -112,6 +124,13 @@ export function loadBotConfig(): BotConfig {
         maxResults: env.MAX_RESULTS_PER_SOURCE as number,
       },
     },
+    spotify: {
+      enabled: env.ENABLE_SPOTIFY as boolean,
+      ...(env.SPOTIFY_CLIENT_ID ? { clientId: env.SPOTIFY_CLIENT_ID } : {}),
+      ...(env.SPOTIFY_CLIENT_SECRET ? { clientSecret: env.SPOTIFY_CLIENT_SECRET } : {}),
+      timeoutMs: (env.SPOTIFY_TIMEOUT_SECONDS as number) * 1000,
+      market: env.SPOTIFY_MARKET,
+    },
     logging: {
       level: normalizedLevel,
       maxSizeBytes: (env.LOG_MAX_SIZE_MB as number) * 1024 * 1024,
@@ -126,6 +145,10 @@ export function loadBotConfig(): BotConfig {
       prefetchCount: env.PREFETCH_COUNT as number,
       prefetchAll: env.PREFETCH_ALL as boolean,
       streamCacheTTL: (env.STREAM_CACHE_TTL_MINUTES as number) * 60 * 1000,
+      youtubeBatchSize: env.YT_PLAYLIST_BATCH as number,
+      spotifyBatchSize: env.SPOTIFY_PLAYLIST_BATCH as number,
+      spotifyResolveConcurrency: env.SPOTIFY_RESOLVE_CONCURRENCY as number,
+      dedupeOnPlaylist: env.DEDUPE_PLAYLIST as boolean,
     },
   };
 
