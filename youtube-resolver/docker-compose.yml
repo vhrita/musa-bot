@@ -12,5 +12,6 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      - ./cookies:/cookies:ro
+      # Mount cookies directory as writable persistent store for yt-dlp
+      - ./cookies:/data/cookies
       - ./logs:/app/logs

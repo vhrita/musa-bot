@@ -22,8 +22,8 @@ const searchCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes (reduced)
 const MAX_CACHE_SIZE = 20; // Reduced cache for Pi 3
 
-// Capability detection: some yt-dlp builds do not support "ytmusicsearchN:" pseudo-URL
-let YT_MUSIC_SEARCH_SUPPORTED = true;
+// Note: We no longer use the deprecated/pseudo "ytmusicsearchN:" scheme.
+// Preference for YouTube Music is applied via extractor-args (player_client=web_music).
 
 // Rate limiting and circuit breaker
 const activeCalls = new Map(); // Track active calls by URL
@@ -229,50 +229,59 @@ function setCachedResult(query, maxResults, results) {
 
 // Function to get cookie arguments for yt-dlp
 function getCookieArgs() {
-  const cookiesPath = resolverConfig.ytdlpCookiesPath;
-  
-  if (cookiesPath) {
-    // Check if file exists
-    const fs = require('fs');
-    if (fs.existsSync(cookiesPath)) {
-      // Copy cookies to a writable location (yt-dlp needs write access)
-      const tempCookiesPath = '/tmp/cookies.txt';
-      try {
-        fs.copyFileSync(cookiesPath, tempCookiesPath);
-        logger.info('Using cookies file (copied to writable location)', { 
-          original: cookiesPath,
-          temp: tempCookiesPath 
-        });
-        return ['--cookies', tempCookiesPath];
-      } catch (error) {
-        logger.error('Failed to copy cookies file', { 
-          error: error.message,
-          path: cookiesPath 
-        });
-        // Fallback: try to use original path with --no-cookies-from-browser
-        return ['--cookies', cookiesPath, '--no-cookies-save'];
+  const fs = require('fs');
+  const path = require('path');
+  const srcPath = resolverConfig.ytdlpCookiesPath; // may come from YTDLP_COOKIES_PATH/YTDLP_COOKIES/COOKIES_PATH
+
+  if (!srcPath) {
+    logger.info('No cookies configured, proceeding without authentication');
+    return [];
+  }
+
+  // If the configured path exists and is writable, use it directly so yt-dlp can persist updates
+  try {
+    fs.accessSync(srcPath, fs.constants.R_OK | fs.constants.W_OK);
+    logger.info('Using writable cookies file', { path: srcPath });
+    return ['--cookies', srcPath];
+  } catch {
+    // Not writable or missing; try to seed a persistent, writable store
+  }
+
+  const storePath = process.env.COOKIES_STORE_PATH || '/data/cookies/cookies.txt';
+  try {
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  } catch {}
+
+  try {
+    if (!fs.existsSync(storePath)) {
+      if (fs.existsSync(srcPath)) {
+        fs.copyFileSync(srcPath, storePath);
+        logger.info('Seeded writable cookies store from source', { source: srcPath, store: storePath });
+      } else {
+        logger.warn('Configured cookies source not found; creating empty store', { source: srcPath, store: storePath });
+        fs.writeFileSync(storePath, '# Netscape HTTP Cookie File\n');
       }
-    } else {
-      logger.warn('Cookies file not found', { path: cookiesPath });
+    }
+    // Verify writability of the store path
+    fs.accessSync(storePath, fs.constants.R_OK | fs.constants.W_OK);
+    logger.info('Using persistent writable cookies store', { store: storePath });
+    return ['--cookies', storePath];
+  } catch (error) {
+    logger.error('Failed to prepare writable cookies store', { error: error.message, store: storePath, source: srcPath });
+    // Last resort: return original path (may be read-only; yt-dlp might not persist updates)
+    if (fs.existsSync(srcPath)) {
+      logger.warn('Falling back to read-only cookies path', { path: srcPath });
+      return ['--cookies', srcPath];
     }
   }
-  
-  // Fallback: no cookies
-  logger.info('No cookies configured, proceeding without authentication');
+
+  logger.info('No usable cookies file; proceeding without authentication');
   return [];
 }
 
 // Cleanup function for temporary files
 function cleanupTempFiles() {
-  const fs = require('fs');
-  try {
-    if (fs.existsSync('/tmp/cookies.txt')) {
-      fs.unlinkSync('/tmp/cookies.txt');
-      logger.info('Cleaned up temporary cookies file');
-    }
-  } catch (error) {
-    logger.warn('Failed to cleanup temp cookies', { error: error.message });
-  }
+  // No-op: we use a persistent cookies store; keep method for backward compatibility
 }
 
 // Cleanup on exit
@@ -356,28 +365,28 @@ app.post('/search', rateLimitByIp, async (req, res) => {
   try {
     let results;
     
-    // Try quick search first if enabled (prefer YouTube Music)
+    // Try quick search first if enabled (prefer Music client via extractor-args)
     if (quickMode) {
       try {
-        results = await searchYouTubeQuickEngine('ytm', query, maxResults);
+        results = await searchYouTubeQuickEngine('music', query, maxResults);
         if (!results || results.length === 0) {
-          results = await searchYouTubeQuickEngine('yt', query, maxResults);
+          results = await searchYouTubeQuickEngine('default', query, maxResults);
         }
-        logger.info('Quick search completed', { query, resultsCount: results.length, preferred: 'ytmusic' });
+        logger.info('Quick search completed', { query, resultsCount: results.length, preferred: 'music_client' });
       } catch (quickError) {
         logger.warn('Quick search failed, falling back to normal search', { 
           query, 
           error: quickError.message 
         });
-        results = await searchYouTubeEngine('ytm', query, maxResults).catch(async () => {
-          return await searchYouTubeEngine('yt', query, maxResults);
+        results = await searchYouTubeEngine('music', query, maxResults).catch(async () => {
+          return await searchYouTubeEngine('default', query, maxResults);
         });
       }
     } else {
-      // Normal search (prefer YouTube Music)
-      results = await searchYouTubeEngine('ytm', query, maxResults);
+      // Normal search: first try with Music client, then fallback to default clients
+      results = await searchYouTubeEngine('music', query, maxResults);
       if (!results || results.length === 0) {
-        results = await searchYouTubeEngine('yt', query, maxResults);
+        results = await searchYouTubeEngine('default', query, maxResults);
       }
     }
     
@@ -1189,12 +1198,7 @@ function searchYouTube(query, maxResults) {
 // Prefer YouTube Music or YouTube explicitly for quick mode
 function searchYouTubeQuickEngine(engine, query, maxResults) {
   return new Promise((resolve, reject) => {
-    if (engine === 'ytm' && !YT_MUSIC_SEARCH_SUPPORTED) {
-      // Skip YT Music engine if we already detected it's unsupported
-      return resolve([]);
-    }
-    const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
-    const searchQuery = `${prefix}${maxResults}:${query}`;
+    const searchQuery = `ytsearch${maxResults}:${query}`;
     
     // Optimized args for speed
     const ytDlpArgs = [
@@ -1210,6 +1214,11 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
       '--max-downloads', maxResults.toString(),
       searchQuery
     ];
+
+    // Prefer Music client on first attempt via extractor-args
+    if (engine === 'music') {
+      ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=web_music,web');
+    }
 
     if (resolverConfig.quickSearchCookies) {
       ytDlpArgs.splice(-1, 0, ...getCookieArgs());
@@ -1235,14 +1244,6 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
       clearTimeout(timeoutId);
       if (isTimedOut) return reject(new Error('Quick search timed out after 30 seconds'));
       if (code !== 0) {
-        // If ytmusic scheme is not supported by current yt-dlp build, disable permanently
-        if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
-          if (YT_MUSIC_SEARCH_SUPPORTED) {
-            YT_MUSIC_SEARCH_SUPPORTED = false;
-            logger.warn('ytmusicsearch not supported by yt-dlp; disabling YT Music preference');
-          }
-          return resolve([]);
-        }
         logger.error('yt-dlp quick search failed', { exitCode: code, error: errorOutput, engine });
         return reject(new Error(errorOutput || `yt-dlp quick search exited with code ${code}`));
       }
@@ -1304,12 +1305,7 @@ function searchYouTubeQuickEngine(engine, query, maxResults) {
 // Prefer YouTube Music or YouTube explicitly for normal mode
 function searchYouTubeEngine(engine, query, maxResults) {
   return new Promise((resolve, reject) => {
-    if (engine === 'ytm' && !YT_MUSIC_SEARCH_SUPPORTED) {
-      // Skip YT Music engine if unsupported
-      return resolve([]);
-    }
-    const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
-    const searchQuery = `${prefix}${maxResults}:${query}`;
+    const searchQuery = `ytsearch${maxResults}:${query}`;
     
     const ytDlpArgs = [
       '--dump-json',
@@ -1324,6 +1320,14 @@ function searchYouTubeEngine(engine, query, maxResults) {
       ...getCookieArgs(),
       searchQuery
     ];
+
+    // First pass can prefer web_music client; fallback uses default clients
+    if (engine === 'music') {
+      ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=web_music,web');
+    } else if (engine === 'default') {
+      // Being explicit helps debugging; this is equivalent to yt-dlp defaults
+      ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=default');
+    }
 
     logger.info('Executing yt-dlp search', { command: 'yt-dlp', engine, args: ytDlpArgs });
 
@@ -1345,13 +1349,6 @@ function searchYouTubeEngine(engine, query, maxResults) {
       clearTimeout(timeoutId);
       if (isTimedOut) return reject(new Error('Search timed out after 45 seconds'));
       if (code !== 0) {
-        if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
-          if (YT_MUSIC_SEARCH_SUPPORTED) {
-            YT_MUSIC_SEARCH_SUPPORTED = false;
-            logger.warn('ytmusicsearch not supported by yt-dlp; disabling YT Music preference');
-          }
-          return resolve([]);
-        }
         logger.error('yt-dlp search failed', { exitCode: code, error: errorOutput, engine });
         return reject(new Error(errorOutput || `yt-dlp exited with code ${code}`));
       }
