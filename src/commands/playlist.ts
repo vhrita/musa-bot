@@ -291,7 +291,7 @@ export default {
 
         const started = Date.now();
         const pageSize = botConfig.music.spotifyBatchSize || 100;
-        const batchSize = botConfig.music.spotifyBatchSize || 50; // resolver é mais custoso
+        const batchSize = Math.max(1, botConfig.music.spotifyBatchSize || 50); // resolver é mais custoso
         const added: QueuedSong[] = [];
         let readCount = 0;
         let lastProgressAt = 0;
@@ -320,6 +320,8 @@ export default {
         let buffer: QueuedSong[] = [];
         // Control concurrency for resolver
         const concurrency = botConfig.music.spotifyResolveConcurrency || 4;
+        // Para listas pequenas (<= batchSize), faça flush a cada item para UX imediato
+        const flushEach = typeof limit === 'number' && isFinite(limit) && limit <= batchSize;
         const inFlight: Promise<void>[] = [];
         let firstFlushed = false;
         let flushing = false;
@@ -433,9 +435,7 @@ export default {
               seen.add(q.url);
             }
             buffer.push(q);
-            if (!firstFlushed) {
-              await flushBuffer();
-            } else if (buffer.length >= batchSize) {
+            if (flushEach || !firstFlushed || buffer.length >= batchSize) {
               await flushBuffer();
             }
           })();

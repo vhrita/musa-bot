@@ -187,6 +187,8 @@ export class MusicManager {
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
+      // Prevent disconnect while preparing the next track
+      this.cancelInactivityTimer(guildId);
       await this.playNext(guildId);
     }
   }
