@@ -49,6 +49,7 @@ const EnvSchema = z.object({
   YTDLP_COOKIES: z.string().optional(),
   YTDLP_PROXY: z.string().optional(),
   YOUTUBE_PROXY: z.string().optional(),
+  YTDLP_SOCKET_TIMEOUT_SECONDS: intInRange(1, 120, 20).optional().default(20),
 
   ENABLE_YOUTUBE: bool().optional().default(false),
   ENABLE_INTERNET_ARCHIVE: bool().optional().default(true),
@@ -115,6 +116,7 @@ export function loadBotConfig(): BotConfig {
     },
     ...((env.YTDLP_COOKIES || env.COOKIES_PATH) ? { ytdlpCookies: (env.YTDLP_COOKIES || env.COOKIES_PATH)! } : {}),
     ...(env.YTDLP_PROXY || env.YOUTUBE_PROXY ? { ytdlpProxy: (env.YTDLP_PROXY || env.YOUTUBE_PROXY)! } : {}),
+    ...(env.YTDLP_SOCKET_TIMEOUT_SECONDS ? { ytdlpSocketTimeoutSeconds: env.YTDLP_SOCKET_TIMEOUT_SECONDS as number } : { ytdlpSocketTimeoutSeconds: 20 }),
     services: {
       youtube: {
         enabled: env.ENABLE_YOUTUBE as boolean,

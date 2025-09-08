@@ -388,6 +388,28 @@ export class MusicManager {
             if (data.lastAdded) payload.lastAdded = data.lastAdded;
             void Announcer.updateGuildStatus(guildId, payload);
           } catch { /* ignore */ }
+
+          // If current song lacks thumbnail, fetch lightweight metadata and update status
+          try {
+            if (current && current.service === 'youtube' && !current.thumbnail) {
+              const yt = this.multiSourceManager.getService('youtube') as any;
+              if (yt?.fetchMeta) {
+                void yt.fetchMeta(current.url).then((meta: any) => {
+                  if (meta?.thumbnail && data.currentSong && data.currentSong.url === current.url) {
+                    (data.currentSong as any).thumbnail = meta.thumbnail;
+                    const vc = this.voiceConnections.get(guildId);
+                    const vId = vc?.joinConfig?.channelId;
+                    const pld: any = { currentSong: data.currentSong, queue: data.queue, recent: data.recentlyPlayed };
+                    if (vId) pld.voiceChannelId = vId;
+                    if (typeof data.currentSongStartedAt === 'number') pld.startedAt = data.currentSongStartedAt;
+                    if (data.lastShuffle) pld.lastShuffle = data.lastShuffle;
+                    if (data.lastAdded) pld.lastAdded = data.lastAdded;
+                    void Announcer.updateGuildStatus(guildId, pld);
+                  }
+                }).catch(() => {});
+              }
+            }
+          } catch { /* ignore */ }
         });
 
         player.on(AudioPlayerStatus.Paused, () => {
@@ -678,6 +700,7 @@ export class MusicManager {
     const count = botConfig.music.prefetchAll ? guildData.queue.length : Math.max(0, botConfig.music.prefetchCount ?? 2);
     const candidates = guildData.queue.slice(0, count);
 
+    let metaUpdated = false;
     for (const song of candidates) {
       // Only prefetch YouTube non-live
       if (song.service !== 'youtube' || song.isLiveStream) continue;
@@ -700,6 +723,34 @@ export class MusicManager {
       } catch (err) {
         logError('Prefetch failed for song', err as Error, { guildId, title: song.title, url: song.url });
       }
+
+      // Fetch thumbnail metadata if missing
+      try {
+        if (!song.thumbnail) {
+          const yt = this.multiSourceManager.getService('youtube') as any;
+          if (yt?.fetchMeta) {
+            const meta = await yt.fetchMeta(song.url);
+            if (meta?.thumbnail) {
+              (song as any).thumbnail = meta.thumbnail;
+              metaUpdated = true;
+            }
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // If we filled any thumbnails, update status once
+    if (metaUpdated) {
+      try {
+        const connection = this.voiceConnections.get(guildId);
+        const voiceChannelId = connection?.joinConfig?.channelId;
+        const payload: any = { currentSong: guildData.currentSong, queue: guildData.queue, recent: guildData.recentlyPlayed };
+        if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+        if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+        if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+        if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+        void Announcer.updateGuildStatus(guildId, payload);
+      } catch { /* ignore */ }
     }
   }
 

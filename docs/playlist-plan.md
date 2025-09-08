@@ -5,8 +5,9 @@ Resumo: implementação principal concluída (detecção de providers, ingestão
 ## Melhorias Opcionais
 
 - Ordem avançada (playOrder):
-  - Introduzir `originalOrder/currentOrder` (ou `queueId` estável) para embaralhar apenas “não tocadas”, preservando atual e histórico.
-  - Manter compatibilidade com Announcer e prefetch.
+  - Implementado: `queueId` estável por item e suporte a restaurar ordem original.
+  - Novo: `/shuffle mode:on|off` — `on` embaralha as “não tocadas”; `off` restaura a ordem original.
+  - Compatível com Announcer e prefetch (usam a ordem atual da fila).
 
 - Dedupe mais amplo (opcional):
   - Hoje o dedupe atua na ingestão corrente; opção para dedupe global contra itens já presentes na fila.

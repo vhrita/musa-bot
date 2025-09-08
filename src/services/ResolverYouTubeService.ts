@@ -91,7 +91,7 @@ export class ResolverYouTubeService extends BaseMusicService {
         '--skip-download',
         '--quiet',
         '--ignore-errors',
-        '--socket-timeout', '15',
+        '--socket-timeout', String(botConfig.ytdlpSocketTimeoutSeconds ?? 15),
         '--max-downloads', maxResults.toString(),
         searchQuery
       ];

@@ -53,6 +53,7 @@ export interface BotConfig {
   resolverUrl?: string;           // external YouTube resolver base URL
   ytdlpCookies?: string;          // path to yt-dlp cookies
   ytdlpProxy?: string;            // proxy for yt-dlp
+  ytdlpSocketTimeoutSeconds?: number; // socket-timeout to pass to yt-dlp commands
   services: {
     youtube: ServiceConfig;
     internetArchive: ServiceConfig;

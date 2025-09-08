@@ -350,4 +350,61 @@ export class YouTubeService extends BaseMusicService {
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     return youtubeRegex.test(url);
   }
+
+  // Fetch basic metadata (thumbnail/creator/duration) for a YouTube video URL
+  async fetchMeta(videoUrl: string): Promise<{ title?: string; thumbnail?: string; creator?: string; duration?: number } | null> {
+    return new Promise((resolve) => {
+      let output = '';
+      let errorOutput = '';
+      const args = [
+        '--dump-json',
+        '--no-warnings',
+        '--skip-download',
+        '--no-check-certificate',
+        '--geo-bypass',
+        '--socket-timeout', String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        videoUrl,
+      ];
+
+      // Add cookies if configured and accessible (best-effort)
+      if (botConfig.ytdlpCookies) {
+        try {
+          const fs = require('fs');
+          if (fs.existsSync(botConfig.ytdlpCookies)) {
+            const cookieContent = fs.readFileSync(botConfig.ytdlpCookies, 'utf8');
+            const tempCookiesPath = `/tmp/yt-dlp-meta-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.txt`;
+            fs.writeFileSync(tempCookiesPath, cookieContent);
+            args.splice(-1, 0, '--cookies', tempCookiesPath);
+          }
+        } catch { /* ignore cookie problems */ }
+      }
+
+      // Optional proxy support if configured
+      if (botConfig.ytdlpProxy) {
+        // Insert before URL
+        args.splice(-1, 0, '--proxy', botConfig.ytdlpProxy);
+      }
+
+      const p = spawn('yt-dlp', args);
+      p.stdout.on('data', (d) => { output += d.toString(); });
+      p.stderr.on('data', (d) => { errorOutput += d.toString(); });
+      p.on('close', () => {
+        try {
+          const line = output.trim().split('\n')[0] || '';
+          const data = line ? JSON.parse(line) : {};
+          if (!data) return resolve(null);
+          const meta: any = {};
+          if (typeof data.title === 'string') meta.title = data.title;
+          if (typeof data.uploader === 'string') meta.creator = data.uploader;
+          if (typeof data.duration === 'number') meta.duration = data.duration;
+          if (typeof data.thumbnail === 'string') meta.thumbnail = data.thumbnail;
+          return resolve(meta);
+        } catch {
+          return resolve(null);
+        }
+      });
+      p.on('error', () => resolve(null));
+    });
+  }
 }

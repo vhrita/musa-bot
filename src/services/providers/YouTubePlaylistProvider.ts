@@ -48,7 +48,10 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
         '--flat-playlist',
         '--skip-download',
         '--no-check-certificate',
+        '--geo-bypass',
         '--ignore-errors',
+        '--socket-timeout', String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
         '--playlist-start', String(start),
         '--playlist-end', String(end),
         url,
@@ -64,6 +67,13 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
         } catch (e) {
           logWarning('yt_playlist_cookies_unreadable', { cookiePath, error: (e as Error).message });
         }
+      }
+
+      // Optional proxy support (if configured)
+      const proxy = botConfig.ytdlpProxy;
+      if (proxy) {
+        // Insert before URL
+        args.splice(-1, 0, '--proxy', proxy);
       }
 
       logEvent('yt_playlist_ytdlp_command', {
@@ -92,10 +102,36 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
         try {
           const row = JSON.parse(line);
           // Flat playlist entries often provide id/title/uploader; construct watch URL
-          const id: string | undefined = row.id || row.url;
+          const rawId: string | undefined = (typeof row.id === 'string' ? row.id : undefined) || (typeof row.url === 'string' ? row.url : undefined);
           const title: string = normalizeTitle(row.title || 'Unknown Title');
-          if (!id) continue;
-          const watchUrl = `https://www.youtube.com/watch?v=${id}`;
+          if (!rawId) continue;
+
+          // Derive videoId and canonical watch URL
+          const getVideoId = (val: string): string | null => {
+            if (/^[0-9A-Za-z_-]{11}$/.test(val)) return val;
+            try {
+              const u = new URL(val);
+              if (u.hostname === 'youtu.be') {
+                const id = u.pathname.replace(/^\//, '');
+                return /^[0-9A-Za-z_-]{11}$/.test(id) ? id : null;
+              }
+              if (u.hostname.endsWith('youtube.com')) {
+                if (u.pathname.startsWith('/shorts/')) {
+                  const id = (u.pathname.split('/')[2] || '');
+                  return /^[0-9A-Za-z_-]{11}$/.test(id) ? id : null;
+                }
+                const v = u.searchParams.get('v') || '';
+                return /^[0-9A-Za-z_-]{11}$/.test(v) ? v : null;
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          };
+
+          const videoId = getVideoId(rawId);
+          if (!videoId) continue;
+          const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
           const creator: string | undefined = row.uploader || row.channel || row.artist || undefined;
           const durationSec: number | undefined = typeof row.duration === 'number' ? row.duration : undefined;
 
@@ -107,7 +143,12 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
           };
           if (creator) candidate.creator = creator;
           if (durationSec) candidate.durationMs = durationSec * 1000;
-          if (row.thumbnail) candidate.thumbnailUrl = row.thumbnail;
+          if (typeof row.thumbnail === 'string' && row.thumbnail) {
+            candidate.thumbnailUrl = row.thumbnail;
+          } else {
+            // Fallback to static thumbnail (no extra YouTube requests, avoids bot checks)
+            candidate.thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+          }
           yield candidate;
           yielded += 1;
         } catch (e) {
