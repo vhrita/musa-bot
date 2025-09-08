@@ -150,6 +150,9 @@ export class MusicManager {
     if (guildData.queue.length >= botConfig.music.maxQueueSize) {
       throw new Error(`🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`);
     }
+    // Assign stable queueId for advanced play order if missing
+    if (typeof guildData.nextQueueId !== 'number') guildData.nextQueueId = 1;
+    if (typeof song.queueId !== 'number') song.queueId = guildData.nextQueueId++;
 
     guildData.queue.push(song);
     // Track last added meta for footer
@@ -201,8 +204,12 @@ export class MusicManager {
       throw new Error(`🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`);
     }
 
-    // Push all items
-    for (const s of toAdd) guildData.queue.push(s);
+    // Ensure queueId assignment and push all items
+    if (typeof guildData.nextQueueId !== 'number') guildData.nextQueueId = 1;
+    for (const s of toAdd) {
+      if (typeof s.queueId !== 'number') s.queueId = guildData.nextQueueId++;
+      guildData.queue.push(s);
+    }
 
     // Track last added meta for footer using the last item
     const last = toAdd[toAdd.length - 1];
@@ -564,6 +571,7 @@ export class MusicManager {
     const ls: any = { by: by || 'alguém', at: Date.now() };
     if (byId) ls.byId = byId;
     guildData.lastShuffle = ls;
+    guildData.shuffleEnabled = true;
     logEvent('queue_shuffled', { guildId, queueLength: guildData.queue.length, by: ls.by });
 
     // Re-evaluate prefetch targets after shuffle
@@ -581,6 +589,39 @@ export class MusicManager {
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
       if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+      void Announcer.updateGuildStatus(guildId, payload);
+    } catch { /* ignore */ }
+  }
+
+  // Restore queue to the original insertion order (by stable queueId)
+  restoreOriginalOrder(guildId: string, by?: string, byId?: string): void {
+    const guildData = this.getGuildData(guildId);
+    // Sort by queueId asc, falling back to addedAt when missing
+    guildData.queue.sort((a, b) => {
+      const ai = typeof a.queueId === 'number' ? a.queueId : Number(a.addedAt?.getTime?.() ?? 0);
+      const bi = typeof b.queueId === 'number' ? b.queueId : Number(b.addedAt?.getTime?.() ?? 0);
+      return ai - bi;
+    });
+
+    guildData.shuffleEnabled = false;
+    logEvent('queue_restored_original_order', { guildId, queueLength: guildData.queue.length, by: by || 'alguém', byId });
+
+    // Re-evaluate prefetch targets after order change
+    this.schedulePrefetch(guildId, 250);
+
+    // Update status message after order change
+    try {
+      const connection = this.voiceConnections.get(guildId);
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      const payload: any = {
+        currentSong: guildData.currentSong,
+        queue: guildData.queue,
+        recent: guildData.recentlyPlayed,
+      };
+      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle; // keep last shuffle meta
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
     } catch { /* ignore */ }
@@ -684,19 +725,21 @@ export class MusicManager {
 
   private getGuildData(guildId: string): GuildMusicData {
     let guildData = this.guildData.get(guildId);
-    if (!guildData) {
-      guildData = {
-        queue: [],
-        currentSong: null,
-        volume: 50,
-        isPlaying: false,
-        isPaused: false,
-        loopMode: 'off',
-      };
-      this.guildData.set(guildId, guildData);
+      if (!guildData) {
+        guildData = {
+          queue: [],
+          currentSong: null,
+          volume: 50,
+          isPlaying: false,
+          isPaused: false,
+          loopMode: 'off',
+          nextQueueId: 1,
+          shuffleEnabled: false,
+        };
+        this.guildData.set(guildId, guildData);
+      }
+      return guildData;
     }
-    return guildData;
-  }
 
   private startInactivityTimer(guildId: string): void {
     this.cancelInactivityTimer(guildId);

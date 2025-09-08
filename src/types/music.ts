@@ -11,6 +11,8 @@ export interface MusicSource {
 export interface QueuedSong extends MusicSource {
   requestedBy: string;
   addedAt: Date;
+  // Stable identifier to preserve original insertion order across shuffles
+  queueId?: number;
 }
 
 export interface GuildMusicData {
@@ -24,6 +26,9 @@ export interface GuildMusicData {
   isPlaying: boolean;
   isPaused: boolean;
   loopMode: LoopMode;
+  // Advanced play order support
+  nextQueueId?: number; // monotonically increasing id for new items
+  shuffleEnabled?: boolean; // current play order mode
   inactivityTimer?: ReturnType<typeof setTimeout>;
   emptyChannelTimer?: ReturnType<typeof setTimeout>;
 }
@@ -52,6 +57,12 @@ export interface BotConfig {
     youtube: ServiceConfig;
     internetArchive: ServiceConfig;
     radio: ServiceConfig;
+  };
+  // Optional resolver settings (external YouTube resolver)
+  resolver?: {
+    searchTimeoutMs?: number;
+    streamTimeoutMs?: number;
+    healthTimeoutMs?: number;
   };
   // Optional Spotify Web API configuration (Client Credentials)
   spotify?: {

@@ -7,7 +7,7 @@ import { spawn } from 'child_process';
 
 export class ResolverYouTubeService extends BaseMusicService {
   private readonly resolverUrl: string;
-  private static ytmSupported = true;
+  // Deprecated flag removed: we no longer use the ytmusicsearch scheme.
 
   constructor(priority: number = 1, enabled: boolean = true) {
     super('youtube', priority, enabled);
@@ -54,7 +54,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       query,
       maxResults
     }, {
-      timeout: 60000 // Increased timeout for Raspberry Pi
+      timeout: botConfig.resolver?.searchTimeoutMs || 120000
     });
 
     const results = response.data.results || [];
@@ -70,11 +70,9 @@ export class ResolverYouTubeService extends BaseMusicService {
 
   private async searchWithDirectYtDlp(query: string, maxResults: number): Promise<MusicSource[]> {
     return new Promise((resolve) => {
-      // Prefer YouTube Music first, then fallback to regular YouTube
-      const trySearch = (engine: 'ytm' | 'yt') => new Promise<MusicSource[]>((res) => {
-        if (engine === 'ytm' && !ResolverYouTubeService.ytmSupported) return res([]);
-        const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
-        const searchQuery = `${prefix}${maxResults}:${query}`;
+      // Prefer Music client first via extractor-args, then fallback to default clients
+      const trySearch = (engine: 'music' | 'default') => new Promise<MusicSource[]>((res) => {
+        const searchQuery = `ytsearch${maxResults}:${query}`;
       
         logEvent('resolver_youtube_search_started', {
           query,
@@ -122,6 +120,13 @@ export class ResolverYouTubeService extends BaseMusicService {
         logEvent('resolver_ytdlp_no_cookies', { query });
       }
 
+        // Prefer web_music on first pass; fallback uses default (explicit for clarity)
+        if (engine === 'music') {
+          ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=web_music,web');
+        } else {
+          ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=default');
+        }
+
         logEvent('resolver_youtube_ytdlp_command', {
           command: 'yt-dlp',
           args: ytDlpArgs.join(' '),
@@ -156,13 +161,6 @@ export class ResolverYouTubeService extends BaseMusicService {
           if (isTimedOut) { logEvent('resolver_ytdlp_timed_out', { query, engine }); return res([]); }
 
           if (code !== 0) {
-            if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
-              if (ResolverYouTubeService.ytmSupported) {
-                ResolverYouTubeService.ytmSupported = false;
-                logEvent('ytmusicsearch_unsupported_disabled');
-              }
-              return res([]);
-            }
             logError('Direct yt-dlp search failed', new Error(errorOutput), { query, exitCode: code, method: 'direct_ytdlp', engine });
             return res([]);
           }
@@ -245,10 +243,10 @@ export class ResolverYouTubeService extends BaseMusicService {
         });
       });
 
-      // Execute with YT Music first, fallback to regular YouTube
-      trySearch('ytm').then((list) => {
+      // Execute with Music client first, fallback to default clients
+      trySearch('music').then((list) => {
         if (list.length > 0) return resolve(list);
-        return trySearch('yt').then(resolve);
+        return trySearch('default').then(resolve);
       });
     });
   }
@@ -292,7 +290,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       url,
       proxy: true // Enable proxy to avoid IP-based 403 errors
     }, {
-      timeout: 120000 // Increased to 120 seconds for Raspberry Pi stream resolution
+      timeout: botConfig.resolver?.streamTimeoutMs || 120000
     });
 
     const streamUrl = response.data.streamUrl;
@@ -424,7 +422,7 @@ export class ResolverYouTubeService extends BaseMusicService {
   async isResolverHealthy(): Promise<boolean> {
     try {
       const response = await axios.get(`${this.resolverUrl}/health`, {
-        timeout: 5000
+        timeout: botConfig.resolver?.healthTimeoutMs || 5000
       });
       
       const isHealthy = response.status === 200 && response.data.status === 'ok';

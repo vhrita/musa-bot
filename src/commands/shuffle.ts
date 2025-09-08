@@ -12,7 +12,17 @@ import { logEvent, logError } from '../utils/logger';
 export default {
   data: new SlashCommandBuilder()
     .setName('shuffle')
-    .setDescription('🔀 Embaralha a ordem das músicas na playlist'),
+    .setDescription('🔀 Altera a ordem de reprodução (embaralhar ou original)')
+    .addStringOption(option =>
+      option
+        .setName('mode')
+        .setDescription('Modo de ordem de reprodução')
+        .addChoices(
+          { name: 'Embaralhar', value: 'on' },
+          { name: 'Ordem Original', value: 'off' },
+        )
+        .setRequired(false)
+    ),
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
     try {
@@ -59,22 +69,29 @@ export default {
         return;
       }
 
-      // Obter informações antes do shuffle
+      // Obter informações antes da mudança
       const queueLengthBefore = guildData.queue.length;
       const firstSongBefore = guildData.queue[0]?.title;
 
-      // Embaralhar a fila (registrando quem acionou)
+      // Determinar modo
+      const mode = (interaction.options.getString('mode') as ('on'|'off'|null)) || 'on';
+
+      // Aplicar ordem solicitada
       const who = member.displayName || interaction.user.username;
       const whoId = member.id;
-      musicManager.shuffleQueue(guildId, who, whoId);
+      if (mode === 'off') {
+        musicManager.restoreOriginalOrder(guildId, who, whoId);
+      } else {
+        musicManager.shuffleQueue(guildId, who, whoId);
+      }
 
       // Obter informações após o shuffle
       const firstSongAfter = guildData.queue[0]?.title;
 
       // Criar embed de confirmação
       const embed = createMusaEmbed({
-        title: 'Playlist Embaralhada',
-        description: `${MusaEmojis.shuffle} ${this.getShufflePhrase()}`,
+        title: mode === 'off' ? 'Ordem Original Restaurada' : 'Playlist Embaralhada',
+        description: mode === 'off' ? `${MusaEmojis.queue} Ordem original reaplicada às próximas músicas.` : `${MusaEmojis.shuffle} ${this.getShufflePhrase()}`,
         color: MusaColors.success
       });
 
@@ -115,7 +132,8 @@ export default {
         userId: member.id,
         queueLength: queueLengthBefore,
         firstSongBefore,
-        firstSongAfter
+        firstSongAfter,
+        mode
       });
 
     } catch (error) {

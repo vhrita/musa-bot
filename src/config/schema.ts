@@ -42,6 +42,9 @@ const EnvSchema = z.object({
     .refine((v) => (v ? /^https?:\/\//i.test(v) : true), {
       message: 'RESOLVER_URL must start with http/https',
     }),
+  RESOLVER_SEARCH_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
+  RESOLVER_STREAM_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
+  RESOLVER_HEALTH_TIMEOUT_SECONDS: intInRange(1, 60, 5).optional().default(5),
   COOKIES_PATH: z.string().optional(),
   YTDLP_COOKIES: z.string().optional(),
   YTDLP_PROXY: z.string().optional(),
@@ -105,6 +108,11 @@ export function loadBotConfig(): BotConfig {
     musaChannelId: env.MUSA_CHANNEL_ID,
     ...(env.GUILD_ID ? { guildId: env.GUILD_ID } : {}),
     ...(env.RESOLVER_URL ? { resolverUrl: env.RESOLVER_URL } : {}),
+    resolver: {
+      searchTimeoutMs: (env.RESOLVER_SEARCH_TIMEOUT_SECONDS as number) * 1000,
+      streamTimeoutMs: (env.RESOLVER_STREAM_TIMEOUT_SECONDS as number) * 1000,
+      healthTimeoutMs: (env.RESOLVER_HEALTH_TIMEOUT_SECONDS as number) * 1000,
+    },
     ...((env.YTDLP_COOKIES || env.COOKIES_PATH) ? { ytdlpCookies: (env.YTDLP_COOKIES || env.COOKIES_PATH)! } : {}),
     ...(env.YTDLP_PROXY || env.YOUTUBE_PROXY ? { ytdlpProxy: (env.YTDLP_PROXY || env.YOUTUBE_PROXY)! } : {}),
     services: {

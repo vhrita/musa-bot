@@ -5,8 +5,7 @@ import { spawn } from 'child_process';
 import { botConfig } from '../config';
 
 export class YouTubeService extends BaseMusicService {
-  // Disable YT Music engine if unsupported by yt-dlp
-  private static ytmSupported = true;
+  // We no longer rely on the deprecated ytmusicsearch scheme.
   constructor(priority: number, enabled: boolean) {
     super('youtube' as ServiceType, priority, enabled);
   }
@@ -17,15 +16,15 @@ export class YouTubeService extends BaseMusicService {
     }
 
     try {
-      logEvent('youtube_search_started', { query, maxResults, prefer: 'ytmusic' });
+      logEvent('youtube_search_started', { query, maxResults, prefer: 'music_first' });
 
-      // Prefer YouTube Music results; fallback to regular YouTube search
-      const ytMusicResults = await this.searchWithYtDlp(query, maxResults, 'ytm');
-      const results = ytMusicResults.length > 0
-        ? ytMusicResults
-        : await this.searchWithYtDlp(query, maxResults, 'yt');
+      // First pass: prefer Music client via extractor-args; fallback: default clients
+      const musicFirst = await this.searchWithYtDlp(query, maxResults, 'music');
+      const results = musicFirst.length > 0
+        ? musicFirst
+        : await this.searchWithYtDlp(query, maxResults, 'default');
 
-      logEvent('youtube_search_completed', { query, resultsCount: results.length, used: ytMusicResults.length > 0 ? 'ytmusic' : 'youtube' });
+      logEvent('youtube_search_completed', { query, resultsCount: results.length, used: musicFirst.length > 0 ? 'music_client' : 'default' });
 
       return results;
 
@@ -38,13 +37,9 @@ export class YouTubeService extends BaseMusicService {
     }
   }
 
-  private async searchWithYtDlp(query: string, maxResults: number, engine: 'yt' | 'ytm' = 'yt'): Promise<MusicSource[]> {
+  private async searchWithYtDlp(query: string, maxResults: number, engine: 'music' | 'default' = 'music'): Promise<MusicSource[]> {
     return new Promise((resolve) => {
-      if (engine === 'ytm' && !YouTubeService.ytmSupported) {
-        return resolve([]);
-      }
-      const prefix = engine === 'ytm' ? 'ytmusicsearch' : 'ytsearch';
-      const searchQuery = `${prefix}${maxResults}:${query}`;
+      const searchQuery = `ytsearch${maxResults}:${query}`;
       
               // Use yt-dlp to search for videos
         const ytDlpArgs = [
@@ -91,9 +86,7 @@ export class YouTubeService extends BaseMusicService {
             });
 
             ytDlpArgs.push('--cookies', tempCookiesPath);
-            
-            // Add additional flags for better YouTube compatibility
-            ytDlpArgs.push('--extractor-args', 'youtube:player_client=android,web');
+            // Better compatibility
             ytDlpArgs.push('--no-check-certificate');
           } else {
             logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
@@ -112,6 +105,13 @@ export class YouTubeService extends BaseMusicService {
           query,
           message: 'YTDLP_COOKIES environment variable not set'
         });
+      }
+
+      // Prefer Music client first; fallback uses default
+      if (engine === 'music') {
+        ytDlpArgs.push('--extractor-args', 'youtube:player_client=web_music,web');
+      } else {
+        ytDlpArgs.push('--extractor-args', 'youtube:player_client=default');
       }
 
       // Add the search query
@@ -139,14 +139,6 @@ export class YouTubeService extends BaseMusicService {
 
       ytDlp.on('close', (code) => {
         if (code !== 0) {
-          // Detect unsupported ytmusic scheme and permanently disable
-          if (engine === 'ytm' && /Unsupported url scheme:\s*"ytmusicsearch/i.test(errorOutput || '')) {
-            if (YouTubeService.ytmSupported) {
-              YouTubeService.ytmSupported = false;
-              logEvent('ytmusicsearch_unsupported_disabled');
-            }
-            return resolve([]);
-          }
           logError('yt-dlp search failed', new Error(errorOutput), { query, exitCode: code });
           return resolve([]);
         }
