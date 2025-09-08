@@ -375,9 +375,39 @@ export default {
 
         // Optional dedupe within this ingestion
         const seen = new Set<string>();
+        let processedFirst = false;
         for await (const item of items) {
           if (playlistFull) break;
           readCount += 1;
+          if (!processedFirst) {
+            processedFirst = true;
+            const payload: { title: string; artists: string[]; durationMs?: number } = {
+              title: item.title,
+              artists: item.artists || [],
+            };
+            if (typeof item.durationMs === 'number') payload.durationMs = item.durationMs;
+            try {
+              const res = await resolver.resolveToYouTube(payload);
+              if (res) {
+                const q: QueuedSong = {
+                  title: item.title,
+                  url: res.url,
+                  service: 'youtube',
+                  requestedBy: member.displayName,
+                  addedAt: new Date(),
+                };
+                if (typeof item.durationMs === 'number') q.duration = Math.round(item.durationMs / 1000);
+                if (item.artists && item.artists.length > 0) q.creator = item.artists.join(', ');
+                if (item.thumbnailUrl) q.thumbnail = item.thumbnailUrl;
+                if (botConfig.music.dedupeOnPlaylist) {
+                  if (!seen.has(q.url)) seen.add(q.url); else continue;
+                }
+                buffer.push(q);
+                await flushBuffer(); // ensure IMMEDIATE first playback
+              }
+            } catch {/* ignore single item failure */}
+            continue;
+          }
           const job = (async () => {
             const payload: { title: string; artists: string[]; durationMs?: number } = {
               title: item.title,
@@ -403,7 +433,11 @@ export default {
               seen.add(q.url);
             }
             buffer.push(q);
-            if (buffer.length >= batchSize) await flushBuffer();
+            if (!firstFlushed) {
+              await flushBuffer();
+            } else if (buffer.length >= batchSize) {
+              await flushBuffer();
+            }
           })();
           inFlight.push(job);
           if (inFlight.length >= concurrency) {

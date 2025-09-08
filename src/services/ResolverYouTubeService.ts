@@ -50,14 +50,40 @@ export class ResolverYouTubeService extends BaseMusicService {
       method: 'resolver'
     });
 
+    const wantMetadata = maxResults > 1; // when only 1 result is needed, prefer minimal payload
     const response = await axios.post(`${this.resolverUrl}/search`, {
       query,
-      maxResults
+      maxResults,
+      metadata: wantMetadata
     }, {
       timeout: botConfig.resolver?.searchTimeoutMs || 120000
     });
 
-    const results = response.data.results || [];
+    const raw = response.data.results || [];
+    const results: MusicSource[] = (raw as any[]).map((r: any) => {
+      if (!wantMetadata) {
+        // Minimal mode: r likely { url, service }
+        if (typeof r === 'string') {
+          return { title: '', creator: '', duration: 0, url: r, service: 'youtube' as ServiceType };
+        }
+        if (r && typeof r.url === 'string') {
+          return { title: '', creator: '', duration: 0, url: r.url, service: (r.service as ServiceType) || 'youtube' };
+        }
+        return null as any;
+      }
+      // Metadata mode: pass through
+      if (r && typeof r.url === 'string') {
+        return {
+          title: typeof r.title === 'string' ? r.title : '',
+          creator: typeof r.creator === 'string' ? r.creator : '',
+          duration: typeof r.duration === 'number' ? r.duration : 0,
+          url: r.url,
+          thumbnail: typeof r.thumbnail === 'string' ? r.thumbnail : undefined,
+          service: (r.service as ServiceType) || 'youtube'
+        } as MusicSource;
+      }
+      return null as any;
+    }).filter(Boolean) as MusicSource[];
 
     logEvent('resolver_youtube_search_completed', {
       query,
