@@ -83,7 +83,7 @@ export class TrackResolver {
 
   async resolveToYouTube(
     candidate: { title: string; artists: string[]; durationMs?: number },
-    opts?: { userQuery?: string; fast?: boolean }
+    opts?: { userQuery?: string }
   ): Promise<TrackResolverResult | null> {
     const key = this.cacheKey(candidate.title, candidate.artists, candidate.durationMs);
     const cached = this.getCached(key);
@@ -99,18 +99,7 @@ export class TrackResolver {
 
     logEvent('track_resolver_search_started', { query, max: this.maxResults });
 
-    // Prefer fast resolver path when requested
-    let results: MusicSource[] = [];
-    const youtubeService: any = this.multi.getService('youtube');
-    if (opts?.fast && youtubeService && typeof youtubeService.searchFast === 'function') {
-      try {
-        results = await youtubeService.searchFast(query, 1);
-      } catch {
-        results = [];
-      }
-    } else {
-      results = await this.multi.search(query, this.maxResults);
-    }
+    const results: MusicSource[] = await this.multi.search(query, this.maxResults);
     if (!results || results.length === 0) {
       logWarning('track_resolver_no_results', { query });
       return null;

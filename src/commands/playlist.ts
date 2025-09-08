@@ -314,8 +314,7 @@ export default {
           color: MusaColors.queue
         })] });
 
-        // For Spotify we want the fastest possible mapping (minimal metadata),
-        // so we resolve with maxResults=1 and fast mode.
+        // Para Spotify, resolvemos com poucos resultados para reduzir custo.
         const resolver = new TrackResolver(musicManager.getMultiSourceManager(), { maxResults: 1 });
         const items = providerImpl.fetchItems(url, { limit, offset, pageSize });
         let buffer: QueuedSong[] = [];
@@ -385,7 +384,7 @@ export default {
               artists: item.artists || [],
             };
             if (typeof item.durationMs === 'number') payload.durationMs = item.durationMs;
-            const res = await resolver.resolveToYouTube(payload, { fast: true });
+            const res = await resolver.resolveToYouTube(payload);
             if (!res) return;
             const q: QueuedSong = {
               // Use Spotify metadata for display to avoid extra lookups
