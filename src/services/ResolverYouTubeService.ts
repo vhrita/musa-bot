@@ -14,6 +14,65 @@ export class ResolverYouTubeService extends BaseMusicService {
     this.resolverUrl = botConfig.resolverUrl || 'http://localhost:3001';
   }
 
+  // Fast search: ask resolver for up to N results with shorter timeout and NO local fallback
+  async searchFast(query: string, maxResults: number = 1): Promise<MusicSource[]> {
+    if (!this.isEnabled()) return [];
+
+    try {
+      logEvent('resolver_youtube_fast_search_started', {
+        query,
+        maxResults,
+        resolverUrl: this.resolverUrl,
+        method: 'resolver_fast'
+      });
+
+      const response = await axios.post(`${this.resolverUrl}/search`, {
+        query,
+        maxResults,
+        quickMode: true,
+        metadata: false
+      }, {
+        timeout: (botConfig.resolver?.fastSearchTimeoutMs ?? 45000)
+      });
+
+      const raw = response.data.results || [];
+      // The resolver may return full metadata or minimal { url, service } when metadata=false
+      const results = (raw as any[]).map((r: any) => {
+        if (typeof r === 'string') {
+          return { title: '', creator: '', duration: 0, url: r, service: 'youtube' as ServiceType };
+        }
+        if (r && typeof r.url === 'string') {
+          return {
+            title: typeof r.title === 'string' ? r.title : '',
+            creator: typeof r.creator === 'string' ? r.creator : '',
+            duration: typeof r.duration === 'number' ? r.duration : 0,
+            url: r.url,
+            thumbnail: typeof r.thumbnail === 'string' ? r.thumbnail : undefined,
+            service: (r.service as ServiceType) || 'youtube'
+          } as MusicSource;
+        }
+        return null;
+      }).filter(Boolean) as MusicSource[];
+
+      logEvent('resolver_youtube_fast_search_completed', {
+        query,
+        resultsCount: results.length,
+        method: 'resolver_fast'
+      });
+
+      return results;
+    } catch (error) {
+      logError('Resolver fast search failed', error as Error, {
+        query,
+        maxResults,
+        resolverUrl: this.resolverUrl,
+        method: 'resolver_fast'
+      });
+      // Do NOT fallback to direct yt-dlp in fast mode; return empty quickly
+      return [];
+    }
+  }
+
   async search(query: string, maxResults: number): Promise<MusicSource[]> {
     if (!this.isEnabled()) {
       return [];

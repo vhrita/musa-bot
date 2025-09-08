@@ -314,7 +314,9 @@ export default {
           color: MusaColors.queue
         })] });
 
-        const resolver = new TrackResolver(musicManager.getMultiSourceManager());
+        // For Spotify we want the fastest possible mapping (minimal metadata),
+        // so we resolve with maxResults=1 and fast mode.
+        const resolver = new TrackResolver(musicManager.getMultiSourceManager(), { maxResults: 1 });
         const items = providerImpl.fetchItems(url, { limit, offset, pageSize });
         let buffer: QueuedSong[] = [];
         // Control concurrency for resolver
@@ -383,17 +385,19 @@ export default {
               artists: item.artists || [],
             };
             if (typeof item.durationMs === 'number') payload.durationMs = item.durationMs;
-            const res = await resolver.resolveToYouTube(payload);
+            const res = await resolver.resolveToYouTube(payload, { fast: true });
             if (!res) return;
             const q: QueuedSong = {
-              title: res.title,
+              // Use Spotify metadata for display to avoid extra lookups
+              title: item.title,
               url: res.url,
               service: 'youtube',
               requestedBy: member.displayName,
               addedAt: new Date(),
             };
-            if (typeof res.duration === 'number') q.duration = res.duration;
-            if (res.creator) q.creator = res.creator;
+            // Prefer Spotify-known metadata when present (no extra cost)
+            if (typeof item.durationMs === 'number') q.duration = Math.round(item.durationMs / 1000);
+            if (item.artists && item.artists.length > 0) q.creator = item.artists.join(', ');
             if (item.thumbnailUrl) q.thumbnail = item.thumbnailUrl;
             if (botConfig.music.dedupeOnPlaylist) {
               if (seen.has(q.url)) return;

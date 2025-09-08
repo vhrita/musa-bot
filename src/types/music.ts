@@ -62,6 +62,7 @@ export interface BotConfig {
   // Optional resolver settings (external YouTube resolver)
   resolver?: {
     searchTimeoutMs?: number;
+    fastSearchTimeoutMs?: number;
     streamTimeoutMs?: number;
     healthTimeoutMs?: number;
   };

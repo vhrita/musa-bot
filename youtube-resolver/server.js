@@ -371,9 +371,10 @@ app.post('/search', rateLimitByIp, async (req, res) => {
   // Bot defaults to 3; allow up to 5 to keep Pi stable
   maxResults = Math.max(1, Math.min(5, Math.floor(maxResults)));
   const quickMode = typeof req.body?.quickMode === 'boolean' ? req.body.quickMode : true;
+  const metadata = typeof req.body?.metadata === 'boolean' ? req.body.metadata : true; // new: allow minimal payloads
   const query = queryRaw.trim();
 
-  logger.info('YouTube search request', { query, maxResults, quickMode });
+  logger.info('YouTube search request', { query, maxResults, quickMode, metadata });
 
   // Check cache first
   const cachedResults = getCachedResult(query, maxResults);
@@ -387,9 +388,9 @@ app.post('/search', rateLimitByIp, async (req, res) => {
     // Try quick search first if enabled (prefer Music client via extractor-args)
     if (quickMode) {
       try {
-        results = await searchYouTubeQuickEngine('music', query, maxResults);
+        results = await searchYouTubeQuickEngine('music', query, maxResults, metadata);
         if (!results || results.length === 0) {
-          results = await searchYouTubeQuickEngine('default', query, maxResults);
+          results = await searchYouTubeQuickEngine('default', query, maxResults, metadata);
         }
         logger.info('Quick search completed', { query, resultsCount: results.length, preferred: 'music_client' });
       } catch (quickError) {
@@ -397,19 +398,19 @@ app.post('/search', rateLimitByIp, async (req, res) => {
           query, 
           error: quickError.message 
         });
-        results = await searchYouTubeEngine('music', query, maxResults, true).catch(async () => {
-          return await searchYouTubeEngine('default', query, maxResults, true);
+        results = await searchYouTubeEngine('music', query, maxResults, metadata, true).catch(async () => {
+          return await searchYouTubeEngine('default', query, maxResults, metadata, true);
         });
       }
     } else {
       // Normal search: first try with Music client, then fallback to default clients
-      results = await searchYouTubeEngine('music', query, maxResults, true).catch(async (e) => {
+      results = await searchYouTubeEngine('music', query, maxResults, metadata, true).catch(async (e) => {
         // If cookies invalid handled internally, we still get results or error; propagate to fallback by returning []
         logger.warn('music_client_search_failed_or_empty', { error: e?.message });
         return [];
       });
       if (!results || results.length === 0) {
-        results = await searchYouTubeEngine('default', query, maxResults, true).catch(async () => []);
+        results = await searchYouTubeEngine('default', query, maxResults, metadata, true).catch(async () => []);
       }
     }
     
@@ -442,10 +443,16 @@ app.post('/search', rateLimitByIp, async (req, res) => {
       logger.info('Filtered non-video results from search', { query, preCount, filteredOut, finalCount: results.length });
     }
 
-    // Cache the results
+    // Optionally strip metadata to reduce payload/CPU when caller only needs URLs
+    let responseResults = results;
+    if (!metadata) {
+      responseResults = results.map(r => ({ url: r.url, service: r.service || 'youtube' }));
+    }
+
+    // Cache the full results only (keeps cache useful for metadata callers)
     setCachedResult(query, maxResults, results);
     
-    res.json({ results });
+    res.json({ results: responseResults });
   } catch (error) {
     logger.error('Search failed', { query, error: error.message });
     res.status(500).json({ error: 'Search failed', message: error.message });
@@ -1219,13 +1226,12 @@ function searchYouTube(query, maxResults) {
 }
 
 // Prefer YouTube Music or YouTube explicitly for quick mode
-function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolverConfig.quickSearchCookies) {
+function searchYouTubeQuickEngine(engine, query, maxResults, wantMetadata, useCookies = resolverConfig.quickSearchCookies) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
     
     // Optimized args for speed
     const ytDlpArgs = [
-      '--dump-json',
       '--default-search', 'ytsearch',
       '--no-playlist',
       '--no-check-certificate',
@@ -1234,9 +1240,16 @@ function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolv
       '--quiet',
       '--ignore-errors',
       '--socket-timeout', String(resolverConfig.ytdlpSocketTimeoutSec || 20),
-      '--max-downloads', maxResults.toString(),
-      searchQuery
+      '--max-downloads', maxResults.toString()
     ];
+
+    if (wantMetadata) {
+      ytDlpArgs.push('--dump-json');
+    } else {
+      ytDlpArgs.push('--print', '%(id)s\t%(title)s\t%(uploader)s\t%(duration)s\t%(webpage_url)s');
+    }
+
+    ytDlpArgs.push(searchQuery);
 
     // Prefer Music client on first attempt via extractor-args
     if (engine === 'music') {
@@ -1272,7 +1285,7 @@ function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolv
           suspendCookiesFor(15 * 60 * 1000); // 15 minutes
           logger.warn('Retrying quick search without cookies after invalidation', { query });
           try {
-            const res = await searchYouTubeQuickEngine(engine, query, maxResults, false);
+            const res = await searchYouTubeQuickEngine(engine, query, maxResults, wantMetadata, false);
             return resolve(res);
           } catch (e) {
             return reject(e);
@@ -1306,21 +1319,36 @@ function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolv
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const videoData = JSON.parse(line);
-          if (videoData?.id && videoData?.title) {
-            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+          if (wantMetadata) {
+            const videoData = JSON.parse(line);
+            if (videoData?.id && videoData?.title) {
+              const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+              if (!isVideoUrl(candidateUrl)) continue;
+              results.push({
+                title: videoData.title,
+                creator: videoData.uploader || 'Unknown Artist',
+                duration: videoData.duration || 0,
+                url: candidateUrl,
+                thumbnail: videoData.thumbnail || '',
+                service: 'youtube'
+              });
+            }
+          } else {
+            const parts = line.split('\t');
+            if (parts.length < 5) continue;
+            const [id, title, uploader, durationStr, url] = parts;
+            const candidateUrl = url || (id ? `https://www.youtube.com/watch?v=${id}` : '');
             if (!isVideoUrl(candidateUrl)) continue;
             results.push({
-              title: videoData.title,
-              creator: videoData.uploader || 'Unknown Artist',
-              duration: videoData.duration || 0,
+              title: title || '',
+              creator: uploader || '',
+              duration: Number(durationStr) || 0,
               url: candidateUrl,
-              thumbnail: videoData.thumbnail || '',
               service: 'youtube'
             });
           }
         } catch (parseError) {
-          logger.warn('Failed to parse yt-dlp quick search JSON output', { error: parseError.message, line: line.substring(0, 100) });
+          logger.warn('Failed to parse yt-dlp quick search output', { error: parseError.message, line: line.substring(0, 100) });
           continue;
         }
       }
@@ -1337,12 +1365,11 @@ function searchYouTubeQuickEngine(engine, query, maxResults, useCookies = resolv
 }
 
 // Prefer YouTube Music or YouTube explicitly for normal mode
-function searchYouTubeEngine(engine, query, maxResults, useCookies = true) {
+function searchYouTubeEngine(engine, query, maxResults, wantMetadata, useCookies = true) {
   return new Promise((resolve, reject) => {
     const searchQuery = `ytsearch${maxResults}:${query}`;
     
     const ytDlpArgs = [
-      '--dump-json',
       '--default-search', 'ytsearch',
       '--no-playlist',
       '--no-check-certificate',
@@ -1353,8 +1380,15 @@ function searchYouTubeEngine(engine, query, maxResults, useCookies = true) {
       '--playlist-end', maxResults.toString(),
       // Attach cookies only when enabled and not suspended
       ...(useCookies && !areCookiesSuspended() ? getCookieArgs() : []),
-      searchQuery
     ];
+
+    if (wantMetadata) {
+      ytDlpArgs.push('--dump-json');
+    } else {
+      ytDlpArgs.push('--print', '%(id)s\t%(title)s\t%(uploader)s\t%(duration)s\t%(webpage_url)s');
+    }
+
+    ytDlpArgs.push(searchQuery);
 
     // First pass can prefer web_music client; fallback uses default clients
     if (engine === 'music') {
@@ -1423,21 +1457,36 @@ function searchYouTubeEngine(engine, query, maxResults, useCookies = true) {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const videoData = JSON.parse(line);
-          if (videoData?.id && videoData?.title) {
-            const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+          if (wantMetadata) {
+            const videoData = JSON.parse(line);
+            if (videoData?.id && videoData?.title) {
+              const candidateUrl = videoData.webpage_url || videoData.url || `https://www.youtube.com/watch?v=${videoData.id}`;
+              if (!isVideoUrl(candidateUrl)) continue;
+              results.push({
+                title: videoData.title,
+                creator: videoData.uploader || 'Unknown Artist',
+                duration: videoData.duration || 0,
+                url: candidateUrl,
+                thumbnail: videoData.thumbnail || '',
+                service: 'youtube'
+              });
+            }
+          } else {
+            const parts = line.split('\t');
+            if (parts.length < 5) continue;
+            const [id, title, uploader, durationStr, url] = parts;
+            const candidateUrl = url || (id ? `https://www.youtube.com/watch?v=${id}` : '');
             if (!isVideoUrl(candidateUrl)) continue;
             results.push({
-              title: videoData.title,
-              creator: videoData.uploader || 'Unknown Artist',
-              duration: videoData.duration || 0,
+              title: title || '',
+              creator: uploader || '',
+              duration: Number(durationStr) || 0,
               url: candidateUrl,
-              thumbnail: videoData.thumbnail || '',
               service: 'youtube'
             });
           }
         } catch (parseError) {
-          logger.warn('Failed to parse yt-dlp JSON output', { error: parseError.message, line: line.substring(0, 100) });
+          logger.warn('Failed to parse yt-dlp search output', { error: parseError.message, line: line.substring(0, 100) });
           continue;
         }
       }

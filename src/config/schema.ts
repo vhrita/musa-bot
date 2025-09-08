@@ -45,6 +45,7 @@ const EnvSchema = z.object({
   RESOLVER_SEARCH_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
   RESOLVER_STREAM_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
   RESOLVER_HEALTH_TIMEOUT_SECONDS: intInRange(1, 60, 5).optional().default(5),
+  RESOLVER_FAST_SEARCH_TIMEOUT_SECONDS: intInRange(1, 600, 45).optional().default(45),
   COOKIES_PATH: z.string().optional(),
   YTDLP_COOKIES: z.string().optional(),
   YTDLP_PROXY: z.string().optional(),
@@ -111,6 +112,7 @@ export function loadBotConfig(): BotConfig {
     ...(env.RESOLVER_URL ? { resolverUrl: env.RESOLVER_URL } : {}),
     resolver: {
       searchTimeoutMs: (env.RESOLVER_SEARCH_TIMEOUT_SECONDS as number) * 1000,
+      fastSearchTimeoutMs: (env.RESOLVER_FAST_SEARCH_TIMEOUT_SECONDS as number) * 1000,
       streamTimeoutMs: (env.RESOLVER_STREAM_TIMEOUT_SECONDS as number) * 1000,
       healthTimeoutMs: (env.RESOLVER_HEALTH_TIMEOUT_SECONDS as number) * 1000,
     },
