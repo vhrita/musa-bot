@@ -6,17 +6,32 @@ import { botConfig } from '../config';
 import { spawn } from 'child_process';
 
 export class ResolverYouTubeService extends BaseMusicService {
-  private readonly resolverUrl: string;
-  // Deprecated flag removed: we no longer use the ytmusicsearch scheme.
+  private readonly resolverUrl: string | null;
+  private readonly resolverDisabled: boolean;
 
   constructor(priority: number = 1, enabled: boolean = true) {
     super('youtube', priority, enabled);
-    this.resolverUrl = botConfig.resolverUrl || 'http://localhost:3001';
+    if (botConfig.resolverUrl) {
+      this.resolverUrl = botConfig.resolverUrl;
+      this.resolverDisabled = false;
+    } else {
+      this.resolverUrl = null;
+      this.resolverDisabled = true;
+      // Log once at construction so operator can confirm the mode at startup
+      logEvent('resolver_disabled_direct_mode', {
+        reason: 'RESOLVER_URL not configured — skipping resolver, using yt-dlp directly'
+      });
+    }
   }
 
   async search(query: string, maxResults: number): Promise<MusicSource[]> {
     if (!this.isEnabled()) {
       return [];
+    }
+
+    // When resolver is disabled, skip health-check and go straight to yt-dlp
+    if (this.resolverDisabled) {
+      return await this.searchWithDirectYtDlp(query, maxResults);
     }
 
     // First, try the resolver if available
@@ -51,7 +66,7 @@ export class ResolverYouTubeService extends BaseMusicService {
     });
 
     const wantMetadata = maxResults > 1; // when only 1 result is needed, prefer minimal payload
-    const response = await axios.post(`${this.resolverUrl}/search`, {
+    const response = await axios.post(`${this.resolverUrl!}/search`, {
       query,
       maxResults,
       metadata: wantMetadata
@@ -284,6 +299,11 @@ export class ResolverYouTubeService extends BaseMusicService {
 
     const url = source.url; // Extract URL from MusicSource object
 
+    // When resolver is disabled, skip health-check and go straight to yt-dlp
+    if (this.resolverDisabled) {
+      return await this.getStreamUrlWithDirectYtDlp(url);
+    }
+
     // First, try the resolver if available
     try {
       const isHealthy = await this.isResolverHealthy();
@@ -312,7 +332,7 @@ export class ResolverYouTubeService extends BaseMusicService {
       method: 'resolver'
     });
 
-    const response = await axios.post(`${this.resolverUrl}/stream`, {
+    const response = await axios.post(`${this.resolverUrl!}/stream`, {
       url,
       proxy: true // Enable proxy to avoid IP-based 403 errors
     }, {
@@ -447,7 +467,7 @@ export class ResolverYouTubeService extends BaseMusicService {
   // Health check method
   async isResolverHealthy(): Promise<boolean> {
     try {
-      const response = await axios.get(`${this.resolverUrl}/health`, {
+      const response = await axios.get(`${this.resolverUrl!}/health`, {
         timeout: botConfig.resolver?.healthTimeoutMs || 5000
       });
       
