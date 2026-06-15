@@ -45,8 +45,6 @@ const EnvSchema = z.object({
   RESOLVER_SEARCH_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
   RESOLVER_STREAM_TIMEOUT_SECONDS: intInRange(1, 600, 180).optional().default(180),
   RESOLVER_HEALTH_TIMEOUT_SECONDS: intInRange(1, 60, 5).optional().default(5),
-  COOKIES_PATH: z.string().optional(),
-  YTDLP_COOKIES: z.string().optional(),
   YTDLP_PROXY: z.string().optional(),
   YOUTUBE_PROXY: z.string().optional(),
   YTDLP_SOCKET_TIMEOUT_SECONDS: intInRange(1, 120, 20).optional().default(20),
@@ -61,7 +59,6 @@ const EnvSchema = z.object({
   RADIO_PRIORITY: intInRange(1, 10, 1).optional().default(1),
   MAX_RESULTS_PER_SOURCE: intInRange(1, 25, 3).optional().default(3),
 
-  SEARCH_TIMEOUT_SECONDS: intInRange(1, 120, 10).optional().default(10),
   MAX_QUEUE_SIZE: intInRange(1, 1000, 100).optional().default(100),
   INACTIVITY_TIMEOUT: intInRange(10, 3600, 60).optional().default(60),
   EMPTY_CHANNEL_TIMEOUT: intInRange(10, 7200, 120).optional().default(120),
@@ -69,7 +66,6 @@ const EnvSchema = z.object({
   PREFETCH_ENABLED: bool().optional().default(true),
   PREFETCH_COUNT: intInRange(0, 10, 2).optional().default(2),
   PREFETCH_ALL: bool().optional().default(false),
-  STREAM_CACHE_TTL_MINUTES: intInRange(1, 120, 10).optional().default(10),
   // Playlist ingestion tuning
   YT_PLAYLIST_BATCH: intInRange(1, 500, 100).optional().default(100),
   SPOTIFY_PLAYLIST_BATCH: intInRange(1, 200, 50).optional().default(50),
@@ -114,9 +110,10 @@ export function loadBotConfig(): BotConfig {
       streamTimeoutMs: (env.RESOLVER_STREAM_TIMEOUT_SECONDS as number) * 1000,
       healthTimeoutMs: (env.RESOLVER_HEALTH_TIMEOUT_SECONDS as number) * 1000,
     },
-    ...((env.YTDLP_COOKIES || env.COOKIES_PATH) ? { ytdlpCookies: (env.YTDLP_COOKIES || env.COOKIES_PATH)! } : {}),
     ...(env.YTDLP_PROXY || env.YOUTUBE_PROXY ? { ytdlpProxy: (env.YTDLP_PROXY || env.YOUTUBE_PROXY)! } : {}),
-    ...(env.YTDLP_SOCKET_TIMEOUT_SECONDS ? { ytdlpSocketTimeoutSeconds: env.YTDLP_SOCKET_TIMEOUT_SECONDS as number } : { ytdlpSocketTimeoutSeconds: 20 }),
+    ...(env.YTDLP_SOCKET_TIMEOUT_SECONDS
+      ? { ytdlpSocketTimeoutSeconds: env.YTDLP_SOCKET_TIMEOUT_SECONDS as number }
+      : { ytdlpSocketTimeoutSeconds: 20 }),
     services: {
       youtube: {
         enabled: env.ENABLE_YOUTUBE as boolean,
@@ -147,14 +144,12 @@ export function loadBotConfig(): BotConfig {
       maxFiles: env.LOG_MAX_FILES as number,
     },
     music: {
-      searchTimeout: (env.SEARCH_TIMEOUT_SECONDS as number) * 1000,
       maxQueueSize: env.MAX_QUEUE_SIZE as number,
       inactivityTimeout: (env.INACTIVITY_TIMEOUT as number) * 1000,
       emptyChannelTimeout: (env.EMPTY_CHANNEL_TIMEOUT as number) * 1000,
       prefetchEnabled: env.PREFETCH_ENABLED as boolean,
       prefetchCount: env.PREFETCH_COUNT as number,
       prefetchAll: env.PREFETCH_ALL as boolean,
-      streamCacheTTL: (env.STREAM_CACHE_TTL_MINUTES as number) * 60 * 1000,
       youtubeBatchSize: env.YT_PLAYLIST_BATCH as number,
       spotifyBatchSize: env.SPOTIFY_PLAYLIST_BATCH as number,
       spotifyResolveConcurrency: env.SPOTIFY_RESOLVE_CONCURRENCY as number,
