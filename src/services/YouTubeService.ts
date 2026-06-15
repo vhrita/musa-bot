@@ -306,6 +306,10 @@ export class YouTubeService extends BaseMusicService {
       '-', // write audio bytes to stdout
       '--quiet', // suppress progress bar (stderr still carries errors)
       '--no-warnings',
+      '--retries',
+      '10', // retry on transient network errors (e.g. WARP hiccups)
+      '--fragment-retries',
+      '10', // retry individual fragments before giving up the track
       ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
     ];
 
@@ -339,22 +343,20 @@ export class YouTubeService extends BaseMusicService {
 
     proc.on('exit', (code, signal) => {
       if (code !== 0 && signal !== 'SIGKILL') {
-        // Only log as error if not killed intentionally (SIGKILL = normal stop/skip)
-        if (stderrBuf.trim()) {
-          logError('youtube_pipe_stream_ytdlp_exit_nonzero', new Error(stderrBuf.trim()), {
+        // Any non-zero exit that wasn't an intentional SIGKILL is an error —
+        // always log at error level so it appears in error.log even when stderr
+        // is empty (silent failures are the hardest to debug).
+        logError(
+          'youtube_pipe_stream_ytdlp_exit_nonzero',
+          new Error(stderrBuf.trim() || `yt-dlp exited with code ${code}`),
+          {
             title: source.title,
             url: source.url,
             exitCode: code,
             signal,
-          });
-        } else {
-          logEvent('youtube_pipe_stream_ytdlp_exit', {
-            title: source.title,
-            url: source.url,
-            exitCode: code,
-            signal,
-          });
-        }
+            hasStderr: stderrBuf.trim().length > 0,
+          },
+        );
       } else {
         logEvent('youtube_pipe_stream_ytdlp_done', {
           title: source.title,

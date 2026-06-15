@@ -17,6 +17,7 @@ import { analyzeUrl, detectProvider, detectContentKind } from '../utils/provider
 import { SpotifyPlaylistProvider } from '../services/providers/SpotifyPlaylistProvider';
 import { TrackResolver } from '../services/TrackResolver';
 import { spawn } from 'child_process';
+import { buildYtDlpBaseArgs } from '../utils/ytdlp';
 
 export default {
   data: new SlashCommandBuilder()
@@ -343,7 +344,16 @@ export default {
   async fetchYouTubeMeta(videoUrl: string): Promise<any | null> {
     return new Promise((resolve) => {
       let output = '';
-      const args = ['--dump-json', '--no-warnings', '--skip-download', videoUrl];
+      // Use shared base args so this call goes through WARP proxy + UA,
+      // consistent with every other yt-dlp call-site. Without this the
+      // datacenter IP hits YouTube directly and gets bot-blocked.
+      const args = [
+        '--dump-json',
+        '--no-warnings',
+        '--skip-download',
+        ...buildYtDlpBaseArgs({ includeProxy: true, includeSocketTimeout: true }),
+        videoUrl,
+      ];
       const p = spawn('yt-dlp', args);
       p.stdout.on('data', (d) => {
         output += d.toString();
