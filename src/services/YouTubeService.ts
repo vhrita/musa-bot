@@ -170,7 +170,7 @@ export class YouTubeService extends BaseMusicService {
         const ytDlpArgs = [
           '--get-url',
           '--format',
-          'bestaudio[ext=m4a]/bestaudio/best',
+          'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
           '--no-playlist',
           ...buildYtDlpBaseArgs({ includeProxy: true }),
           '--extractor-args',
@@ -299,8 +299,10 @@ export class YouTubeService extends BaseMusicService {
     //   1. webm container with opus codec (YouTube format 251, 48 kHz — zero transcode)
     //   2. any webm (could still be opus, demuxProbe will detect)
     //   3. m4a (AAC — will fall back to ffmpeg transcode in voice layer)
-    //   4. anything else (worst case)
-    const format = 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
+    //   4. any audio-only stream
+    //   5. best combined format (video+audio) — ffmpeg extracts audio; covers DRM/429 edge
+    //      cases where YouTube only offers combined formats (e.g. tv client experiment)
+    const format = 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best';
 
     // UA + socket-timeout + proxy (WARP) + EJS n-sig solver from shared util.
     // player_client=web,tv: avoids ios/mweb (requires GVS PoToken); the EJS solver

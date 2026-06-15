@@ -345,7 +345,7 @@ export class ResolverYouTubeService extends BaseMusicService {
         '--get-url',
         '--no-warnings',
         '--format',
-        'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio',
+        'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
         ...buildYtDlpBaseArgs({ includeProxy: true }),
         '--extractor-args',
         'youtube:player_client=web,tv',
