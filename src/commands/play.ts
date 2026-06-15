@@ -1,20 +1,15 @@
-import { 
-  SlashCommandBuilder, 
-  ChatInputCommandInteraction, 
-  GuildMember, 
-  VoiceChannel 
-} from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, GuildMember, VoiceChannel } from 'discord.js';
 import { MusicManager } from '../services/MusicManager';
 import { QueuedSong } from '../types/music';
-import { 
-  createMusaEmbed, 
-  safeReply, 
-  MusaColors, 
-  MusaEmojis, 
+import {
+  createMusaEmbed,
+  safeReply,
+  MusaColors,
+  MusaEmojis,
   getServiceEmoji,
   formatDuration,
   truncateText,
-  getRandomPhrase
+  getRandomPhrase,
 } from '../utils/discord';
 import { logEvent, logError } from '../utils/logger';
 import { botConfig } from '../config';
@@ -27,12 +22,12 @@ export default {
   data: new SlashCommandBuilder()
     .setName('play')
     .setDescription('🎵 Adiciona uma música à playlist e começa a tocar!')
-    .addStringOption(option =>
+    .addStringOption((option) =>
       option
         .setName('query')
         .setDescription('Nome da música, artista ou termo de busca')
         .setRequired(true)
-        .setMaxLength(200)
+        .setMaxLength(200),
     ),
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
@@ -54,7 +49,7 @@ export default {
         guildId,
         userId: member.id,
         query,
-        voiceChannel: validationResult.voiceChannel!.name
+        voiceChannel: validationResult.voiceChannel!.name,
       });
 
       // Se for URL, tratar provedores diretamente
@@ -109,7 +104,7 @@ export default {
         const embed = createMusaEmbed({
           title: 'Nenhuma Música Encontrada',
           description: `${MusaEmojis.search} Não consegui encontrar "${truncateText(query, 50)}" em nenhuma das minhas fontes musicais! Tente um termo diferente! ${MusaEmojis.notes}`,
-          color: MusaColors.warning
+          color: MusaColors.warning,
         });
 
         await safeReply(interaction, { embeds: [embed] });
@@ -118,16 +113,15 @@ export default {
 
       // Adicionar à queue e responder
       await this.addSongAndRespond(interaction, musicManager, selectedSong, member, guildId);
-
     } catch (error) {
       await this.handlePlayError(interaction, error as Error);
     }
   },
 
   async validatePlayRequest(
-    interaction: ChatInputCommandInteraction, 
-    member: GuildMember, 
-    musicManager: MusicManager
+    interaction: ChatInputCommandInteraction,
+    member: GuildMember,
+    musicManager: MusicManager,
   ): Promise<{ success: boolean; embed?: any; voiceChannel?: VoiceChannel }> {
     // Verificar canal de voz
     const userVoiceChannel = member.voice.channel as VoiceChannel | null;
@@ -137,8 +131,8 @@ export default {
         embed: createMusaEmbed({
           title: 'Canal de Voz Necessário',
           description: `${MusaEmojis.microphone} Você precisa estar em um canal de voz para eu tocar música! Entre em um canal e tente novamente! ${MusaEmojis.notes}`,
-          color: MusaColors.warning
-        })
+          color: MusaColors.warning,
+        }),
       };
     }
 
@@ -150,8 +144,8 @@ export default {
         embed: createMusaEmbed({
           title: 'Permissões Insuficientes',
           description: `${MusaEmojis.warning} Não tenho permissão para entrar ou falar no canal **${userVoiceChannel.name}**! ${MusaEmojis.notes}`,
-          color: MusaColors.error
-        })
+          color: MusaColors.error,
+        }),
       };
     }
 
@@ -162,8 +156,8 @@ export default {
         embed: createMusaEmbed({
           title: 'Canal Exclusivo da Musa',
           description: `${MusaEmojis.fairy} Eu só posso tocar música no meu canal especial! Vá para <#${botConfig.musaChannelId}> para usar meus comandos musicais! ${MusaEmojis.sparkles}`,
-          color: MusaColors.warning
-        })
+          color: MusaColors.warning,
+        }),
       };
     }
 
@@ -177,8 +171,8 @@ export default {
           embed: createMusaEmbed({
             title: 'Erro de Conexão',
             description: `${MusaEmojis.warning} ${getRandomPhrase('error')}`,
-            color: MusaColors.error
-          })
+            color: MusaColors.error,
+          }),
         };
       }
     }
@@ -199,7 +193,7 @@ export default {
     musicManager: MusicManager,
     selectedSong: any,
     member: GuildMember,
-    guildId: string
+    guildId: string,
   ): Promise<void> {
     const queuedSong: QueuedSong = {
       title: selectedSong.title,
@@ -228,7 +222,7 @@ export default {
       const embed = createMusaEmbed({
         title: 'Erro na Playlist',
         description: `${MusaEmojis.warning} ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
-        color: MusaColors.error
+        color: MusaColors.error,
       });
 
       await safeReply(interaction, { embeds: [embed] });
@@ -242,14 +236,14 @@ export default {
     // Log de sucesso
     const guildData = musicManager.getGuildMusicData(guildId);
     const isNowPlaying = guildData.currentSong?.title === selectedSong.title;
-    
+
     logEvent('play_command_completed', {
       guildId,
       userId: member.id,
       title: selectedSong.title,
       service: selectedSong.service,
       isNowPlaying,
-      queuePosition: isNowPlaying ? 0 : guildData.queue.length
+      queuePosition: isNowPlaying ? 0 : guildData.queue.length,
     });
   },
 
@@ -259,22 +253,20 @@ export default {
 
     const embed = createMusaEmbed({
       title: isNowPlaying ? 'Tocando Agora' : 'Adicionada à Playlist',
-      description: isNowPlaying 
-        ? getRandomPhrase('playing')
-        : getRandomPhrase('added'),
+      description: isNowPlaying ? getRandomPhrase('playing') : getRandomPhrase('added'),
       color: isNowPlaying ? MusaColors.nowPlaying : MusaColors.success,
-      timestamp: true
+      timestamp: true,
     });
 
     const serviceEmoji = getServiceEmoji(selectedSong.service);
     const title = truncateText(selectedSong.title, 60);
-    
+
     embed.addFields([
       {
         name: `${MusaEmojis.notes} Música`,
         value: `${serviceEmoji} **${title}**`,
-        inline: false
-      }
+        inline: false,
+      },
     ]);
 
     if (selectedSong.creator) {
@@ -282,8 +274,8 @@ export default {
         {
           name: `${MusaEmojis.microphone} Artista`,
           value: truncateText(selectedSong.creator, 40),
-          inline: true
-        }
+          inline: true,
+        },
       ]);
     }
 
@@ -292,8 +284,8 @@ export default {
         {
           name: `${MusaEmojis.cd} Duração`,
           value: formatDuration(selectedSong.duration),
-          inline: true
-        }
+          inline: true,
+        },
       ]);
     }
 
@@ -302,8 +294,8 @@ export default {
         {
           name: `${MusaEmojis.live} Status`,
           value: 'Transmissão ao vivo',
-          inline: true
-        }
+          inline: true,
+        },
       ]);
     }
 
@@ -312,8 +304,8 @@ export default {
         {
           name: `${MusaEmojis.queue} Posição na Fila`,
           value: `#${guildData.queue.length + 1}`,
-          inline: true
-        }
+          inline: true,
+        },
       ]);
     }
 
@@ -321,8 +313,8 @@ export default {
       {
         name: `${MusaEmojis.fairy} Solicitada por`,
         value: member.displayName,
-        inline: true
-      }
+        inline: true,
+      },
     ]);
 
     if (selectedSong.thumbnail) {
@@ -336,13 +328,13 @@ export default {
     logError('Play command failed', error, {
       guildId: interaction.guildId,
       userId: interaction.user.id,
-      query: interaction.options.getString('query')
+      query: interaction.options.getString('query'),
     });
 
     const embed = createMusaEmbed({
       title: 'Erro Musical',
       description: `${MusaEmojis.warning} ${getRandomPhrase('error')}`,
-      color: MusaColors.error
+      color: MusaColors.error,
     });
 
     await safeReply(interaction, { embeds: [embed] });
@@ -351,25 +343,22 @@ export default {
   async fetchYouTubeMeta(videoUrl: string): Promise<any | null> {
     return new Promise((resolve) => {
       let output = '';
-      let errorOutput = '';
-      const args = [
-        '--dump-json',
-        '--no-warnings',
-        '--skip-download',
-        '--no-check-certificate',
-        videoUrl,
-      ];
+      const args = ['--dump-json', '--no-warnings', '--skip-download', '--no-check-certificate', videoUrl];
       if (botConfig.ytdlpCookies) {
         try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
           const fs = require('fs');
           if (fs.existsSync(botConfig.ytdlpCookies)) {
             args.splice(-1, 0, '--cookies', botConfig.ytdlpCookies);
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
       const p = spawn('yt-dlp', args);
-      p.stdout.on('data', (d) => { output += d.toString(); });
-      p.stderr.on('data', (d) => { errorOutput += d.toString(); });
+      p.stdout.on('data', (d) => {
+        output += d.toString();
+      });
       p.on('close', () => {
         try {
           const data = JSON.parse(output.trim().split('\n')[0] || '{}');
