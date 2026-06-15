@@ -294,8 +294,12 @@ export class YouTubeService extends BaseMusicService {
       url: source.url,
     });
 
-    // Best-audio formats, prefer webm (opus-native) then m4a, then anything
-    const format = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
+    // Best-audio formats — prefer webm+opus explicitly (passthrough-friendly):
+    //   1. webm container with opus codec (YouTube format 251, 48 kHz — zero transcode)
+    //   2. any webm (could still be opus, demuxProbe will detect)
+    //   3. m4a (AAC — will fall back to ffmpeg transcode in voice layer)
+    //   4. anything else (worst case)
+    const format = 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
 
     // UA + socket-timeout + proxy (WARP) from shared util
     const ytDlpArgs: string[] = [

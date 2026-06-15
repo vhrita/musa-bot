@@ -9,6 +9,7 @@ import {
   VoiceConnectionStatus,
   StreamType,
   entersState,
+  demuxProbe,
 } from '@discordjs/voice';
 import { VoiceChannel } from 'discord.js';
 import { spawn, ChildProcess } from 'child_process';
@@ -923,11 +924,51 @@ export class MusicManager {
       pid: ytdlpProc.pid,
     });
 
-    // @discordjs/voice StreamType.Arbitrary: voice will spawn its own ffmpeg
-    // to transcode whatever format yt-dlp emits (webm/m4a) into opus for Discord.
-    const resource = createAudioResource(ytdlpProc.stdout, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true,
+    // 🎯 demuxProbe: inspect the first bytes of the yt-dlp stdout to detect the
+    // container/codec type.  For webm+opus (YouTube format 251, 48 kHz) it
+    // returns StreamType.WebmOpus → @discordjs/voice uses the WebmDemuxer from
+    // prism-media to extract opus packets directly — zero ffmpeg, zero re-encode.
+    // For m4a/aac or any other container it falls back to StreamType.Arbitrary →
+    // voice spawns its own ffmpeg transcoder exactly as before.
+    //
+    // IMPORTANT: demuxProbe consumes the beginning of the stream; we MUST use the
+    // `stream` it returns (not ytdlpProc.stdout directly) in createAudioResource.
+    //
+    // inlineVolume: false — passthrough opus packets cannot have a PCM VolumeTransformer
+    // inserted without re-encoding.  The /volume command only updates guildData.volume
+    // and logs (does NOT apply in real-time), so this is a no-op loss functionally.
+    let probeStream: import('stream').Readable;
+    let detectedType: StreamType;
+
+    try {
+      const probeResult = await demuxProbe(ytdlpProc.stdout);
+      probeStream = probeResult.stream;
+      detectedType = probeResult.type;
+    } catch (probeError) {
+      // demuxProbe can reject if yt-dlp emitted nothing (empty stream / early exit).
+      // Kill the orphaned yt-dlp process and surface the error to the caller so
+      // MusicManager can attempt the next song gracefully.
+      this.killActiveYtdlpProcess(guildId, 'demux_probe_error');
+      throw probeError;
+    }
+
+    logEvent('youtube_pipe_audio_resource_type', {
+      guildId,
+      title: song.title,
+      pid: ytdlpProc.pid,
+      // WebmOpus → passthrough (no ffmpeg), Arbitrary → ffmpeg transcode fallback
+      streamType: detectedType,
+      passthrough: detectedType === StreamType.WebmOpus,
+    });
+
+    const resource = createAudioResource(probeStream, {
+      inputType: detectedType,
+      // inlineVolume MUST be false for opus passthrough: inserting a PCM
+      // VolumeTransformer would force a full opus→PCM→opus round-trip, defeating
+      // the entire purpose of the passthrough path.  The /volume command is a
+      // best-effort log-only operation today (no real-time apply), so there is
+      // no functional regression from disabling it here.
+      inlineVolume: false,
       metadata: { title: song.title },
     });
 
