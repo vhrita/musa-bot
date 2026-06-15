@@ -2,7 +2,6 @@ import { PlaylistMeta, PlaylistProvider, PlaylistItemCandidate } from './types';
 import { analyzeUrl } from '../../utils/providers';
 import { logEvent, logWarning, logError } from '../../utils/logger';
 import { spawn } from 'child_process';
-import { botConfig } from '../../config';
 import { normalizeTitle } from '../../utils/text';
 import { buildYtDlpBaseArgs } from '../../utils/ytdlp';
 

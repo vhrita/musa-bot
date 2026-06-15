@@ -4,7 +4,7 @@ import { logEvent, logError } from '../utils/logger';
 import { spawn, ChildProcess } from 'child_process';
 import { botConfig } from '../config';
 import { isYouTubeVideoUrl } from '../utils/providers';
-import { YTDLP_USER_AGENT, buildYtDlpBaseArgs } from '../utils/ytdlp';
+import { buildYtDlpBaseArgs } from '../utils/ytdlp';
 
 export class YouTubeService extends BaseMusicService {
   // We no longer rely on the deprecated ytmusicsearch scheme.

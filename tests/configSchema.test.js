@@ -29,12 +29,22 @@ function withVars(overrides, fn) {
 
 // Keys set by tests/setupEnv.js that we may want to clear in some tests
 const SETUP_KEYS = [
-  'DISCORD_TOKEN', 'DISCORD_CLIENT_ID',
-  'ENABLE_YOUTUBE', 'ENABLE_INTERNET_ARCHIVE', 'ENABLE_RADIO',
+  'DISCORD_TOKEN',
+  'DISCORD_CLIENT_ID',
+  'ENABLE_YOUTUBE',
+  'ENABLE_INTERNET_ARCHIVE',
+  'ENABLE_RADIO',
   'LOG_LEVEL',
-  'MAX_QUEUE_SIZE', 'SEARCH_TIMEOUT_SECONDS', 'INACTIVITY_TIMEOUT', 'EMPTY_CHANNEL_TIMEOUT',
-  'PREFETCH_ENABLED', 'PREFETCH_COUNT', 'PREFETCH_ALL', 'STREAM_CACHE_TTL_MINUTES',
-  'RESOLVER_URL', 'YTDLP_COOKIES', 'YTDLP_PROXY', 'YOUTUBE_PROXY', 'GUILD_ID'
+  'MAX_QUEUE_SIZE',
+  'INACTIVITY_TIMEOUT',
+  'EMPTY_CHANNEL_TIMEOUT',
+  'PREFETCH_ENABLED',
+  'PREFETCH_COUNT',
+  'PREFETCH_ALL',
+  'RESOLVER_URL',
+  'YTDLP_PROXY',
+  'YOUTUBE_PROXY',
+  'GUILD_ID',
 ];
 
 function clearSetupEnvExcept(excepts = []) {
@@ -64,24 +74,26 @@ describe('config schema loader', () => {
       expect(cfg.services.youtube.enabled).toBe(false);
       expect(cfg.services.radio.enabled).toBe(true);
       expect(cfg.music.maxQueueSize).toBeGreaterThan(0);
-      expect(typeof cfg.music.searchTimeout).toBe('number');
     });
   });
 
   test('boolean coercion and proxy alias', () => {
     const { loadBotConfig } = reloadLoader();
-    withVars({
-      ...clearSetupEnvExcept(['DISCORD_TOKEN']),
-      DISCORD_TOKEN: 'x',
-      ENABLE_YOUTUBE: '1',
-      ENABLE_RADIO: '0',
-      YOUTUBE_PROXY: 'http://proxy:3128'
-    }, () => {
-      const cfg = loadBotConfig();
-      expect(cfg.services.youtube.enabled).toBe(true);
-      expect(cfg.services.radio.enabled).toBe(false);
-      expect(cfg.ytdlpProxy).toBe('http://proxy:3128');
-    });
+    withVars(
+      {
+        ...clearSetupEnvExcept(['DISCORD_TOKEN']),
+        DISCORD_TOKEN: 'x',
+        ENABLE_YOUTUBE: '1',
+        ENABLE_RADIO: '0',
+        YOUTUBE_PROXY: 'http://proxy:3128',
+      },
+      () => {
+        const cfg = loadBotConfig();
+        expect(cfg.services.youtube.enabled).toBe(true);
+        expect(cfg.services.radio.enabled).toBe(false);
+        expect(cfg.ytdlpProxy).toBe('http://proxy:3128');
+      },
+    );
   });
 
   test('invalid LOG_LEVEL falls back to default', () => {
@@ -95,8 +107,11 @@ describe('config schema loader', () => {
 
   test('invalid RESOLVER_URL protocol throws', () => {
     const { loadBotConfig } = reloadLoader();
-    withVars({ ...clearSetupEnvExcept(['DISCORD_TOKEN']), DISCORD_TOKEN: 'x', RESOLVER_URL: 'ftp://host' }, () => {
-      expect(() => loadBotConfig()).toThrow(/RESOLVER_URL must start with http\/https/i);
-    });
+    withVars(
+      { ...clearSetupEnvExcept(['DISCORD_TOKEN']), DISCORD_TOKEN: 'x', RESOLVER_URL: 'ftp://host' },
+      () => {
+        expect(() => loadBotConfig()).toThrow(/RESOLVER_URL must start with http\/https/i);
+      },
+    );
   });
 });
