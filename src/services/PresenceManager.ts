@@ -11,10 +11,6 @@ class PresenceManagerImpl {
     this.client = client;
   }
 
-  setIdleInterval(minutes: number) {
-    this.idleIntervalMs = Math.max(60_000, Math.floor(minutes * 60 * 1000));
-  }
-
   updatePlayingPresence(text: string) {
     if (!this.client?.user) return;
     // Cancel idle cycling if any
@@ -22,9 +18,11 @@ class PresenceManagerImpl {
     try {
       this.client.user.setPresence({
         status: 'online',
-        activities: [{ name: text, type: ActivityType.Listening }]
+        activities: [{ name: text, type: ActivityType.Listening }],
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     logEvent('presence_playing_set', { text });
   }
 
@@ -35,9 +33,11 @@ class PresenceManagerImpl {
       try {
         this.client!.user!.setPresence({
           status: 'idle',
-          activities: [{ name: phrase, type: ActivityType.Listening }]
+          activities: [{ name: phrase, type: ActivityType.Listening }],
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       logEvent('presence_idle_set', { phrase });
     };
     // Set immediately and then cycle
