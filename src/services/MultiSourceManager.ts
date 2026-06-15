@@ -6,6 +6,7 @@ import { YouTubeService } from './YouTubeService';
 import { ResolverYouTubeService } from './ResolverYouTubeService';
 import { botConfig } from '../config';
 import { logEvent, logError, logWarning } from '../utils/logger';
+import { isYouTubeVideoUrl } from '../utils/providers';
 
 export class MultiSourceManager {
   private readonly services: BaseMusicService[] = [];
@@ -18,37 +19,32 @@ export class MultiSourceManager {
   private initializeServices(): void {
     // Initialize all services based on config
     const services: BaseMusicService[] = [
-      new RadioService(
-        botConfig.services.radio.priority,
-        botConfig.services.radio.enabled
-      ),
+      new RadioService(botConfig.services.radio.priority, botConfig.services.radio.enabled),
       new InternetArchiveService(
         botConfig.services.internetArchive.priority,
-        botConfig.services.internetArchive.enabled
-      )
+        botConfig.services.internetArchive.enabled,
+      ),
     ];
 
     // Choose YouTube service based on environment
     if (botConfig.resolverUrl) {
       // Use resolver if available
-      services.push(new ResolverYouTubeService(
-        botConfig.services.youtube.priority,
-        botConfig.services.youtube.enabled
-      ));
+      services.push(
+        new ResolverYouTubeService(botConfig.services.youtube.priority, botConfig.services.youtube.enabled),
+      );
       logEvent('resolver_youtube_service_initialized', {
         resolverUrl: botConfig.resolverUrl,
         priority: botConfig.services.youtube.priority,
-        enabled: botConfig.services.youtube.enabled
+        enabled: botConfig.services.youtube.enabled,
       });
     } else {
       // Fallback to direct YouTube service
-      services.push(new YouTubeService(
-        botConfig.services.youtube.priority,
-        botConfig.services.youtube.enabled
-      ));
+      services.push(
+        new YouTubeService(botConfig.services.youtube.priority, botConfig.services.youtube.enabled),
+      );
       logEvent('direct_youtube_service_initialized', {
         priority: botConfig.services.youtube.priority,
-        enabled: botConfig.services.youtube.enabled
+        enabled: botConfig.services.youtube.enabled,
       });
     }
 
@@ -56,13 +52,13 @@ export class MultiSourceManager {
 
     // Filter enabled services and sort by priority
     this.enabledServices = this.services
-      .filter(service => service.isEnabled())
+      .filter((service) => service.isEnabled())
       .sort((a, b) => a.getPriority() - b.getPriority());
 
     logEvent('multi_source_manager_initialized', {
       totalServices: this.services.length,
       enabledServices: this.enabledServices.length,
-      enabledServiceNames: this.enabledServices.map(s => s.getServiceName())
+      enabledServiceNames: this.enabledServices.map((s) => s.getServiceName()),
     });
 
     if (this.enabledServices.length === 0) {
@@ -79,7 +75,7 @@ export class MultiSourceManager {
     logEvent('multi_source_search_started', {
       query,
       maxResultsPerService,
-      enabledServices: this.enabledServices.length
+      enabledServices: this.enabledServices.length,
     });
 
     const searchPromises = this.enabledServices.map(async (service) => {
@@ -88,13 +84,13 @@ export class MultiSourceManager {
         logEvent('service_search_completed', {
           service: service.getServiceName(),
           query,
-          resultsCount: results.length
+          resultsCount: results.length,
         });
         return results;
       } catch (error) {
         logError(`Service search failed: ${service.getServiceName()}`, error as Error, {
           query,
-          service: service.getServiceName()
+          service: service.getServiceName(),
         });
         return [];
       }
@@ -104,32 +100,8 @@ export class MultiSourceManager {
       const allResults = await Promise.all(searchPromises);
       const combinedResults = allResults.flat();
 
-      // Filter out non-video YouTube entries (channels/playlists)
-      const isYouTubeVideoUrl = (u: string): boolean => {
-        try {
-          const url = new URL(u);
-          const host = url.hostname.toLowerCase();
-          const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
-          if (!isYt) return false;
-          if (host === 'youtu.be') {
-            const id = url.pathname.replace(/^\//, '');
-            return !!(id && id.length === 11);
-          }
-          if (url.pathname === '/watch') {
-            const v = url.searchParams.get('v');
-            return !!(v && v.length === 11);
-          }
-          if (url.pathname.startsWith('/shorts/')) {
-            const id = url.pathname.split('/')[2] || '';
-            return id.length === 11;
-          }
-          return false;
-        } catch {
-          return false;
-        }
-      };
-
-      const filteredResults = combinedResults.filter(r => {
+      // Filter out non-video YouTube entries (channels/playlists) — canonical util
+      const filteredResults = combinedResults.filter((r) => {
         if (r.service !== 'youtube') return true;
         return typeof r.url === 'string' && isYouTubeVideoUrl(r.url);
       });
@@ -140,7 +112,7 @@ export class MultiSourceManager {
       logEvent('multi_source_search_completed', {
         query,
         totalResults: sortedResults.length,
-        resultsByService: this.getResultsCountByService(filteredResults)
+        resultsByService: this.getResultsCountByService(filteredResults),
       });
 
       return sortedResults;
@@ -151,9 +123,9 @@ export class MultiSourceManager {
   }
 
   async searchRadio(genre: string, maxResults?: number): Promise<MusicSource[]> {
-    const radioService = this.enabledServices.find(
-      service => service.getServiceName() === 'radio'
-    ) as RadioService | undefined;
+    const radioService = this.enabledServices.find((service) => service.getServiceName() === 'radio') as
+      | RadioService
+      | undefined;
 
     if (!radioService) {
       logWarning('Radio service not available', { genre });
@@ -164,7 +136,7 @@ export class MultiSourceManager {
       const results = await radioService.search(genre, maxResults);
       logEvent('radio_specific_search_completed', {
         genre,
-        resultsCount: results.length
+        resultsCount: results.length,
       });
       return results;
     } catch (error) {
@@ -174,9 +146,9 @@ export class MultiSourceManager {
   }
 
   getAvailableRadioGenres(): string[] {
-    const radioService = this.enabledServices.find(
-      service => service.getServiceName() === 'radio'
-    ) as RadioService | undefined;
+    const radioService = this.enabledServices.find((service) => service.getServiceName() === 'radio') as
+      | RadioService
+      | undefined;
 
     return radioService?.getAvailableGenres() || [];
   }
@@ -185,33 +157,36 @@ export class MultiSourceManager {
     if (results.length === 0) return [];
 
     // Group results by service
-    const resultsByService = results.reduce((acc, result) => {
-      const service = result.service;
-      if (!acc[service]) {
-        acc[service] = [];
-      }
-      acc[service].push(result);
-      return acc;
-    }, {} as Record<ServiceType, MusicSource[]>);
+    const resultsByService = results.reduce(
+      (acc, result) => {
+        const service = result.service;
+        if (!acc[service]) {
+          acc[service] = [];
+        }
+        acc[service].push(result);
+        return acc;
+      },
+      {} as Record<ServiceType, MusicSource[]>,
+    );
 
     // Interleave results to promote diversity
     const diversifiedResults: MusicSource[] = [];
     const serviceKeys = Object.keys(resultsByService) as ServiceType[];
-    
+
     // Sort services by priority
     const sortedServices = [...serviceKeys].sort((a, b) => {
-      const serviceA = this.services.find(s => s.getServiceName() === a);
-      const serviceB = this.services.find(s => s.getServiceName() === b);
-      
+      const serviceA = this.services.find((s) => s.getServiceName() === a);
+      const serviceB = this.services.find((s) => s.getServiceName() === b);
+
       const priorityA = serviceA?.getPriority() || 999;
       const priorityB = serviceB?.getPriority() || 999;
-      
+
       return priorityA - priorityB;
     });
 
     // Interleave results from different services
-    const maxResultsPerService = Math.max(...Object.values(resultsByService).map(arr => arr.length));
-    
+    const maxResultsPerService = Math.max(...Object.values(resultsByService).map((arr) => arr.length));
+
     for (let i = 0; i < maxResultsPerService; i++) {
       for (const service of sortedServices) {
         const serviceResults = resultsByService[service];
@@ -226,11 +201,14 @@ export class MultiSourceManager {
   }
 
   private getResultsCountByService(results: MusicSource[]): Record<string, number> {
-    return results.reduce((acc, result) => {
-      const service = result.service;
-      acc[service] = (acc[service] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    return results.reduce(
+      (acc, result) => {
+        const service = result.service;
+        acc[service] = (acc[service] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
   }
 
   getEnabledServices(): BaseMusicService[] {
@@ -238,10 +216,10 @@ export class MultiSourceManager {
   }
 
   getService(serviceName: ServiceType): BaseMusicService | null {
-    return this.services.find(service => service.getServiceName() === serviceName) || null;
+    return this.services.find((service) => service.getServiceName() === serviceName) || null;
   }
 
   isServiceEnabled(serviceName: ServiceType): boolean {
-    return this.enabledServices.some(service => service.getServiceName() === serviceName);
+    return this.enabledServices.some((service) => service.getServiceName() === serviceName);
   }
 }

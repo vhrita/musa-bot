@@ -49,10 +49,9 @@ export interface BotConfig {
   prefix: string;
   musaChannelId: string | undefined;
   // Optional deployment/runtime extras
-  guildId?: string;               // for deploy-commands convenience
-  resolverUrl?: string;           // external YouTube resolver base URL
-  ytdlpCookies?: string;          // path to yt-dlp cookies
-  ytdlpProxy?: string;            // proxy for yt-dlp
+  guildId?: string; // for deploy-commands convenience
+  resolverUrl?: string; // external YouTube resolver base URL
+  ytdlpProxy?: string; // proxy for yt-dlp
   ytdlpSocketTimeoutSeconds?: number; // socket-timeout to pass to yt-dlp commands
   services: {
     youtube: ServiceConfig;
@@ -79,15 +78,13 @@ export interface BotConfig {
     maxFiles?: number;
   };
   music: {
-    searchTimeout: number;
     maxQueueSize: number;
     inactivityTimeout: number;
     emptyChannelTimeout: number;
     // Prefetching configuration
     prefetchEnabled?: boolean;
     prefetchCount?: number; // how many upcoming songs to prefetch
-    prefetchAll?: boolean;  // prefetch entire queue (caution)
-    streamCacheTTL?: number; // ms TTL for cached stream URLs
+    prefetchAll?: boolean; // prefetch entire queue (caution)
     // Playlist ingestion tuning
     youtubeBatchSize?: number; // batch size for YouTube playlist ingestion
     spotifyBatchSize?: number; // batch size for Spotify ingestion

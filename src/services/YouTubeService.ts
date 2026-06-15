@@ -1,9 +1,10 @@
-import fs from 'fs';
 import { BaseMusicService } from './BaseMusicService';
 import { MusicSource, ServiceType } from '../types/music';
 import { logEvent, logError } from '../utils/logger';
 import { spawn, ChildProcess } from 'child_process';
 import { botConfig } from '../config';
+import { isYouTubeVideoUrl } from '../utils/providers';
+import { buildYtDlpBaseArgs } from '../utils/ytdlp';
 
 export class YouTubeService extends BaseMusicService {
   // We no longer rely on the deprecated ytmusicsearch scheme.
@@ -52,83 +53,19 @@ export class YouTubeService extends BaseMusicService {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
 
-      // Use yt-dlp to search for videos
+      // Use yt-dlp to search for videos — UA + proxy from shared util
       const ytDlpArgs = [
         '--dump-json',
         '--no-warnings',
         '--skip-download',
-        '--user-agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        ...buildYtDlpBaseArgs({ includeProxy: true }),
       ];
-
-      // Add cookies if configured
-      if (botConfig.ytdlpCookies) {
-        const cookiePath = botConfig.ytdlpCookies;
-
-        logEvent('youtube_cookies_check', {
-          cookiePath,
-          query,
-        });
-
-        try {
-          if (fs.existsSync(cookiePath)) {
-            const stats = fs.statSync(cookiePath);
-            const cookieContent = fs.readFileSync(cookiePath, 'utf8');
-            const cookieLines = cookieContent
-              .split('\n')
-              .filter((line: string) => line.trim() && !line.startsWith('#')).length;
-
-            logEvent('youtube_cookies_loaded', {
-              cookiePath,
-              fileSize: stats.size,
-              cookieLines,
-              lastModified: stats.mtime,
-              query,
-            });
-
-            // Create a temporary copy of cookies to avoid permission issues
-            const tempCookiesPath = `/tmp/yt-dlp-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
-            fs.writeFileSync(tempCookiesPath, cookieContent);
-
-            logEvent('youtube_temp_cookies_created', {
-              originalPath: cookiePath,
-              tempPath: tempCookiesPath,
-              query,
-            });
-
-            ytDlpArgs.push('--cookies', tempCookiesPath);
-            // Better compatibility
-            ytDlpArgs.push('--no-check-certificate');
-          } else {
-            logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
-              cookiePath,
-              query,
-            });
-          }
-        } catch (error) {
-          logError('Error reading YouTube cookies file', error as Error, {
-            cookiePath,
-            query,
-          });
-        }
-      } else {
-        logEvent('youtube_cookies_not_configured', {
-          query,
-          message: 'YTDLP_COOKIES environment variable not set',
-        });
-      }
 
       // Prefer Music client first; fallback uses default
       if (engine === 'music') {
         ytDlpArgs.push('--extractor-args', 'youtube:player_client=web_music,web');
       } else {
         ytDlpArgs.push('--extractor-args', 'youtube:player_client=default');
-      }
-
-      // Add proxy if configured — search must go through WARP just like stream/pipe
-      const searchProxy = botConfig.ytdlpProxy;
-      if (searchProxy) {
-        ytDlpArgs.push('--proxy', searchProxy);
       }
 
       // Add the search query
@@ -139,7 +76,7 @@ export class YouTubeService extends BaseMusicService {
         args: ytDlpArgs.join(' '),
         query,
         engine,
-        hasProxy: !!searchProxy,
+        hasProxy: !!botConfig.ytdlpProxy,
       });
 
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
@@ -171,33 +108,6 @@ export class YouTubeService extends BaseMusicService {
             .split('\n')
             .filter((line) => line.trim());
 
-          // Helper: only accept direct YouTube video URLs (not channels/playlists)
-          const isVideoUrl = (u: string): boolean => {
-            try {
-              const url = new URL(u);
-              const host = url.hostname.toLowerCase();
-              const isYt =
-                host === 'youtu.be' ||
-                host === 'www.youtube.com' ||
-                host === 'youtube.com' ||
-                host.endsWith('.youtube.com');
-              if (!isYt) return false;
-              if (host === 'youtu.be') {
-                const id = url.pathname.replace(/^\//, '');
-                return !!(id && id.length === 11);
-              }
-              if (url.pathname === '/watch') {
-                const v = url.searchParams.get('v');
-                return !!(v && v.length === 11);
-              }
-              // Avoid shorts
-              if (url.pathname.startsWith('/shorts/')) return false;
-              return false;
-            } catch {
-              return false;
-            }
-          };
-
           for (const line of lines) {
             try {
               const video = JSON.parse(line);
@@ -208,8 +118,8 @@ export class YouTubeService extends BaseMusicService {
               }
               const candidateUrl =
                 (video.webpage_url as string) || `https://www.youtube.com/watch?v=${video.id}`;
-              // Filter out channels/playlists by URL pattern and video id length
-              if (!isVideoUrl(candidateUrl)) {
+              // Filter out channels/playlists — use canonical util from providers
+              if (!isYouTubeVideoUrl(candidateUrl)) {
                 continue;
               }
 
@@ -260,63 +170,15 @@ export class YouTubeService extends BaseMusicService {
         let output = '';
         let errorOutput = '';
 
-        // Use yt-dlp to get the actual stream URL
+        // Use yt-dlp to get the actual stream URL — UA + proxy from shared util
         const ytDlpArgs = [
           '--get-url',
           '--format',
           'bestaudio[ext=m4a]/bestaudio/best',
           '--no-playlist',
-          '--user-agent',
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+          ...buildYtDlpBaseArgs({ includeProxy: true }),
+          source.url,
         ];
-
-        // Add cookies if configured
-        if (botConfig.ytdlpCookies) {
-          const cookiePath = botConfig.ytdlpCookies;
-
-          try {
-            if (fs.existsSync(cookiePath)) {
-              // Create a temporary copy of cookies to avoid permission issues
-              const cookieContent = fs.readFileSync(cookiePath, 'utf8');
-              const tempCookiesPath = `/tmp/yt-dlp-stream-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
-              fs.writeFileSync(tempCookiesPath, cookieContent);
-
-              ytDlpArgs.push('--cookies', tempCookiesPath);
-
-              // Add additional flags for better YouTube compatibility
-              ytDlpArgs.push('--extractor-args', 'youtube:player_client=android,web');
-              ytDlpArgs.push('--no-check-certificate');
-
-              logEvent('youtube_stream_cookies_used', {
-                originalPath: cookiePath,
-                tempPath: tempCookiesPath,
-                title: source.title,
-                url: source.url,
-              });
-            } else {
-              logEvent('youtube_stream_cookies_missing', {
-                cookiePath,
-                title: source.title,
-                url: source.url,
-              });
-            }
-          } catch (error) {
-            logError('Error checking cookies for stream URL', error as Error, {
-              cookiePath,
-              title: source.title,
-              url: source.url,
-            });
-          }
-        }
-
-        // Add proxy if configured
-        const proxy = botConfig.ytdlpProxy;
-        if (proxy) {
-          ytDlpArgs.push('--proxy', proxy);
-        }
-
-        // Add the URL
-        ytDlpArgs.push(source.url);
 
         const ytDlp = spawn('yt-dlp', ytDlpArgs);
 
@@ -383,38 +245,15 @@ export class YouTubeService extends BaseMusicService {
   } | null> {
     return new Promise((resolve) => {
       let output = '';
+      // UA + proxy + socket-timeout from shared util; URL appended last
       const args = [
         '--dump-json',
         '--no-warnings',
         '--skip-download',
-        '--no-check-certificate',
         '--geo-bypass',
-        '--socket-timeout',
-        String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
-        '--user-agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
         videoUrl,
       ];
-
-      // Add cookies if configured and accessible (best-effort)
-      if (botConfig.ytdlpCookies) {
-        try {
-          if (fs.existsSync(botConfig.ytdlpCookies)) {
-            const cookieContent = fs.readFileSync(botConfig.ytdlpCookies, 'utf8');
-            const tempCookiesPath = `/tmp/yt-dlp-meta-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.txt`;
-            fs.writeFileSync(tempCookiesPath, cookieContent);
-            args.splice(-1, 0, '--cookies', tempCookiesPath);
-          }
-        } catch {
-          /* ignore cookie problems */
-        }
-      }
-
-      // Optional proxy support if configured
-      if (botConfig.ytdlpProxy) {
-        // Insert before URL
-        args.splice(-1, 0, '--proxy', botConfig.ytdlpProxy);
-      }
 
       const p = spawn('yt-dlp', args);
       p.stdout.on('data', (d) => {
@@ -458,6 +297,7 @@ export class YouTubeService extends BaseMusicService {
     // Best-audio formats, prefer webm (opus-native) then m4a, then anything
     const format = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
 
+    // UA + socket-timeout + proxy (WARP) from shared util
     const ytDlpArgs: string[] = [
       '--no-playlist',
       '--format',
@@ -466,40 +306,15 @@ export class YouTubeService extends BaseMusicService {
       '-', // write audio bytes to stdout
       '--quiet', // suppress progress bar (stderr still carries errors)
       '--no-warnings',
-      '--socket-timeout',
-      String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
-      '--user-agent',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+      ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
     ];
 
-    // Proxy: if set, all network traffic goes through WARP — this is the whole point
-    const proxy = botConfig.ytdlpProxy;
-    if (proxy) {
-      ytDlpArgs.push('--proxy', proxy);
-    } else {
+    if (!botConfig.ytdlpProxy) {
       logEvent('youtube_pipe_stream_no_proxy', {
         title: source.title,
         url: source.url,
         message: 'YTDLP_PROXY not set — downloading direct (degraded, may be bot-blocked)',
       });
-    }
-
-    // Cookies: best-effort, same pattern as getStreamUrl
-    if (botConfig.ytdlpCookies) {
-      const cookiePath = botConfig.ytdlpCookies;
-      try {
-        if (fs.existsSync(cookiePath)) {
-          const cookieContent = fs.readFileSync(cookiePath, 'utf8');
-          const tempCookiesPath = `/tmp/yt-dlp-pipe-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.txt`;
-          fs.writeFileSync(tempCookiesPath, cookieContent);
-          ytDlpArgs.push('--cookies', tempCookiesPath);
-        }
-      } catch (err) {
-        logError('youtube_pipe_stream: error setting up cookies (ignored)', err as Error, {
-          cookiePath,
-          title: source.title,
-        });
-      }
     }
 
     // The watch URL is always the canonical youtube.com/watch?v=... from the queue
@@ -508,8 +323,7 @@ export class YouTubeService extends BaseMusicService {
     logEvent('youtube_pipe_stream_command', {
       title: source.title,
       url: source.url,
-      hasProxy: !!proxy,
-      hasCookies: !!botConfig.ytdlpCookies,
+      hasProxy: !!botConfig.ytdlpProxy,
       format,
     });
 

@@ -4,6 +4,8 @@ import { logEvent, logError } from '../utils/logger';
 import axios from 'axios';
 import { botConfig } from '../config';
 import { spawn } from 'child_process';
+import { isYouTubeVideoUrl } from '../utils/providers';
+import { YTDLP_USER_AGENT } from '../utils/ytdlp';
 
 export class ResolverYouTubeService extends BaseMusicService {
   private readonly resolverUrl: string | null;
@@ -135,61 +137,38 @@ export class ResolverYouTubeService extends BaseMusicService {
             engine,
           });
 
-          // Use optimized yt-dlp flags as fallback (same as resolver)
+          // Optimized yt-dlp flags as fallback — UA from shared util
           const ytDlpArgs = [
             '--dump-json',
             '--default-search',
             'ytsearch',
             '--no-playlist',
-            '--no-check-certificate',
             '--geo-bypass',
             '--skip-download',
             '--quiet',
             '--ignore-errors',
             '--socket-timeout',
             String(botConfig.ytdlpSocketTimeoutSeconds ?? 15),
+            '--user-agent',
+            YTDLP_USER_AGENT,
             '--max-downloads',
             maxResults.toString(),
-            searchQuery,
           ];
 
-          // Only add cookies if file exists and is readable (avoid permission errors)
-          const cookiePath = botConfig.ytdlpCookies;
-          if (cookiePath) {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const fs = require('fs');
-            try {
-              if (fs.existsSync(cookiePath)) {
-                // Test if file is readable before adding to args
-                fs.accessSync(cookiePath, fs.constants.R_OK);
-                ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
-                logEvent('resolver_ytdlp_cookies_added', { cookiePath, query });
-              } else {
-                logEvent('resolver_ytdlp_cookies_not_found', { cookiePath, query });
-              }
-            } catch (error) {
-              logEvent('resolver_ytdlp_cookies_error', {
-                cookiePath,
-                query,
-                error: (error as Error).message,
-              });
-            }
-          } else {
-            logEvent('resolver_ytdlp_no_cookies', { query });
+          // Proxy: WARP must be used for fallback path too
+          const searchProxy = botConfig.ytdlpProxy;
+          if (searchProxy) {
+            ytDlpArgs.push('--proxy', searchProxy);
           }
 
           // Prefer web_music on first pass; fallback uses default (explicit for clarity)
           if (engine === 'music') {
-            ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=web_music,web');
+            ytDlpArgs.push('--extractor-args', 'youtube:player_client=web_music,web');
           } else {
-            ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=default');
+            ytDlpArgs.push('--extractor-args', 'youtube:player_client=default');
           }
 
-          // Add proxy if configured — direct fallback must route through WARP too
-          const searchProxy = botConfig.ytdlpProxy;
-          if (searchProxy) {
-            ytDlpArgs.splice(-1, 0, '--proxy', searchProxy);
-          }
+          ytDlpArgs.push(searchQuery);
 
           logEvent('resolver_youtube_ytdlp_command', {
             command: 'yt-dlp',
@@ -241,33 +220,6 @@ export class ResolverYouTubeService extends BaseMusicService {
             const results: MusicSource[] = [];
             const lines = output.trim().split('\n');
 
-            // Helper: only accept direct YouTube video URLs (not channels/playlists)
-            const isVideoUrl = (u: string): boolean => {
-              try {
-                const url = new URL(u);
-                const host = url.hostname.toLowerCase();
-                const isYt =
-                  host === 'youtu.be' ||
-                  host === 'www.youtube.com' ||
-                  host === 'youtube.com' ||
-                  host.endsWith('.youtube.com');
-                if (!isYt) return false;
-                if (host === 'youtu.be') {
-                  const id = url.pathname.replace(/^\//, '');
-                  return !!(id && id.length === 11);
-                }
-                if (url.pathname === '/watch') {
-                  const v = url.searchParams.get('v');
-                  return !!(v && v.length === 11);
-                }
-                // Avoid shorts
-                if (url.pathname.startsWith('/shorts/')) return false;
-                return false;
-              } catch {
-                return false;
-              }
-            };
-
             for (const line of lines) {
               if (!line.trim()) continue;
 
@@ -277,7 +229,8 @@ export class ResolverYouTubeService extends BaseMusicService {
                 if (videoData?.id && videoData?.title) {
                   const candidateUrl =
                     videoData.webpage_url || `https://www.youtube.com/watch?v=${videoData.id}`;
-                  if (!isVideoUrl(candidateUrl)) {
+                  // Use canonical util — no inline duplicate
+                  if (!isYouTubeVideoUrl(candidateUrl)) {
                     // Skip channels/playlists or non-video entries
                     continue;
                   }
@@ -399,47 +352,23 @@ export class ResolverYouTubeService extends BaseMusicService {
         method: 'direct_ytdlp',
       });
 
-      // Use yt-dlp directly to get stream URL
+      // Use yt-dlp directly to get stream URL — UA from shared util
       const ytDlpArgs = [
         '--get-url',
         '--no-warnings',
         '--format',
         'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio',
         '--user-agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-        url,
+        YTDLP_USER_AGENT,
       ];
 
-      // Add cookies if available and accessible
-      const cookiePath = botConfig.ytdlpCookies;
-      if (cookiePath) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const fs = require('fs');
-        try {
-          if (fs.existsSync(cookiePath)) {
-            // Test if file is readable before adding to args
-            fs.accessSync(cookiePath, fs.constants.R_OK);
-            ytDlpArgs.splice(-1, 0, '--cookies', cookiePath);
-            logEvent('resolver_ytdlp_stream_cookies_added', { cookiePath, url });
-          } else {
-            logEvent('resolver_ytdlp_stream_cookies_not_found', { cookiePath, url });
-          }
-        } catch (error) {
-          logEvent('resolver_ytdlp_stream_cookies_error', {
-            cookiePath,
-            url,
-            error: (error as Error).message,
-          });
-        }
-      } else {
-        logEvent('resolver_ytdlp_stream_no_cookies', { url });
-      }
-
-      // Add proxy if configured — direct fallback must route through WARP too
+      // Proxy: direct fallback must route through WARP too
       const streamProxy = botConfig.ytdlpProxy;
       if (streamProxy) {
-        ytDlpArgs.splice(-1, 0, '--proxy', streamProxy);
+        ytDlpArgs.push('--proxy', streamProxy);
       }
+
+      ytDlpArgs.push(url);
 
       logEvent('resolver_youtube_ytdlp_stream_command', {
         command: 'yt-dlp',
