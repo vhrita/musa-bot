@@ -8,6 +8,7 @@ import {
   joinVoiceChannel,
   VoiceConnectionStatus,
   StreamType,
+  entersState,
 } from '@discordjs/voice';
 import { VoiceChannel } from 'discord.js';
 import { spawn, ChildProcess } from 'child_process';
@@ -60,9 +61,24 @@ export class MusicManager {
         logEvent('voice_connection_ready', { guildId, channelId: channel.id });
       });
 
-      connection.on(VoiceConnectionStatus.Disconnected, () => {
-        logEvent('voice_connection_disconnected', { guildId });
-        this.cleanup(guildId);
+      // R1 fix: graceful reconnect — VoiceConnectionStatus.Disconnected fires on
+      // routine events (region switch, ICE renegotiation, UDP jitter) that Discord
+      // recovers from automatically. Only do a full teardown on confirmed terminal
+      // disconnections.
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          // Give Discord up to 5 s to move into Signalling or Connecting on its own.
+          // If either resolves, the reconnect is in progress — preserve queue/session.
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+          logEvent('voice_reconnecting', { guildId });
+        } catch {
+          // Neither state was reached within 5 s → this is a terminal disconnection.
+          logWarning('voice_disconnected_terminal', { guildId });
+          this.cleanup(guildId);
+        }
       });
 
       connection.on('error', (error) => {
@@ -74,6 +90,19 @@ export class MusicManager {
         channelId: channel.id,
         channelName: channel.name,
       });
+
+      // R2 fix: wait for the connection to be Ready before returning.
+      // Without this, callers that immediately start playback hit a race where
+      // the connection is still in Signalling/Connecting and audio is never heard.
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+        logEvent('voice_ready', { guildId, channelId: channel.id });
+      } catch (err) {
+        logError('voice_ready_timeout', err as Error, { guildId, channelId: channel.id });
+        connection.destroy();
+        this.voiceConnections.delete(guildId);
+        return null;
+      }
 
       return connection;
     } catch (error) {
@@ -111,6 +140,9 @@ export class MusicManager {
     // Cleanup audio player
     const player = this.audioPlayers.get(guildId);
     if (player) {
+      // R7 fix: remove all listeners BEFORE stop so no stale event (Idle/error)
+      // fires after teardown and re-enters playback logic on a dead session.
+      player.removeAllListeners();
       player.stop(true);
       this.audioPlayers.delete(guildId);
     }
@@ -345,6 +377,12 @@ export class MusicManager {
 
         // Set up player event handlers
         player.on(AudioPlayerStatus.Playing, () => {
+          // R7 gate: if the session was torn down (e.g. reconnect failed) while
+          // a resource was being prepared, this handler fires on a dead session.
+          // Bail out silently — removeAllListeners() in cleanup normally prevents
+          // this, but an in-flight promise can race past it.
+          if (!this.voiceConnections.has(guildId)) return;
+
           const data = this.getGuildData(guildId);
           data.isPlaying = true;
           data.isPaused = false;
@@ -396,11 +434,14 @@ export class MusicManager {
         });
 
         player.on(AudioPlayerStatus.Paused, () => {
+          if (!this.voiceConnections.has(guildId)) return; // R7 gate
           guildData.isPaused = true;
           logEvent('audio_player_paused', { guildId });
         });
 
         player.on(AudioPlayerStatus.Idle, async () => {
+          if (!this.voiceConnections.has(guildId)) return; // R7 gate
+
           const data = this.getGuildData(guildId);
           data.isPlaying = false;
           data.isPaused = false;
@@ -420,6 +461,8 @@ export class MusicManager {
         });
 
         player.on('error', (error) => {
+          if (!this.voiceConnections.has(guildId)) return; // R7 gate
+
           const data = this.getGuildData(guildId);
           // Clean up active stream tracking
           if (data.currentSong) {
