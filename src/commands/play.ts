@@ -183,7 +183,7 @@ export default {
   async searchMusic(query: string, musicManager: MusicManager) {
     const searchResults = await musicManager
       .getMultiSourceManager()
-      .search(query, botConfig.services.radio.maxResults);
+      .search(query, botConfig.services.youtube.maxResults);
 
     return searchResults.length > 0 ? searchResults[0] : null;
   },
@@ -343,18 +343,7 @@ export default {
   async fetchYouTubeMeta(videoUrl: string): Promise<any | null> {
     return new Promise((resolve) => {
       let output = '';
-      const args = ['--dump-json', '--no-warnings', '--skip-download', '--no-check-certificate', videoUrl];
-      if (botConfig.ytdlpCookies) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const fs = require('fs');
-          if (fs.existsSync(botConfig.ytdlpCookies)) {
-            args.splice(-1, 0, '--cookies', botConfig.ytdlpCookies);
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+      const args = ['--dump-json', '--no-warnings', '--skip-download', videoUrl];
       const p = spawn('yt-dlp', args);
       p.stdout.on('data', (d) => {
         output += d.toString();
