@@ -215,8 +215,8 @@ export class MusicManager {
     // Schedule prefetch for upcoming songs
     this.schedulePrefetch(guildId);
 
-    // Update status message (queue changed)
-    this.pushStatus(guildId);
+    // Update status message (queue changed) — version bump
+    this.bumpAndPushStatus(guildId);
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
@@ -268,8 +268,8 @@ export class MusicManager {
     // Schedule a single prefetch pass
     this.schedulePrefetch(guildId);
 
-    // Update status message once
-    this.pushStatus(guildId);
+    // Update status message once — version bump
+    this.bumpAndPushStatus(guildId);
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
@@ -324,9 +324,10 @@ export class MusicManager {
         /* ignore */
       }
 
-      // Update status message to reflect silence/empty queue
-      // Update status (currentSong already null above)
-      this.pushStatus(guildId);
+      // Update status message to reflect silence/empty queue — version bump
+      // Reset playedCount when going truly idle (no next song)
+      guildData.playedCount = 0;
+      this.bumpAndPushStatus(guildId);
       logEvent('queue_finished', { guildId });
       return;
     }
@@ -410,10 +411,12 @@ export class MusicManager {
             /* ignore */
           }
 
-          // Announce in the Musa channel with embed and optional thumbnail
-          this.pushStatus(guildId);
+          // Announce in the Musa channel with embed and optional thumbnail — version bump
+          this.bumpAndPushStatus(guildId);
 
-          // If current song lacks thumbnail, fetch lightweight metadata and update status
+          // If current song lacks thumbnail, fetch lightweight metadata and update status.
+          // Thumbnail fill does NOT bump the version: it is a cosmetic refinement of the
+          // same "now playing" state that was already versioned above.
           try {
             if (current && current.service === 'youtube' && !current.thumbnail) {
               const yt = this.multiSourceManager.getService('youtube') as any;
@@ -423,6 +426,7 @@ export class MusicManager {
                   .then((meta: any) => {
                     if (meta?.thumbnail && data.currentSong && data.currentSong.url === current.url) {
                       (data.currentSong as any).thumbnail = meta.thumbnail;
+                      // No version bump — same logical state, just filled the thumbnail
                       this.pushStatus(guildId);
                     }
                   })
@@ -451,7 +455,10 @@ export class MusicManager {
           if (data.currentSong) {
             data.recentlyPlayed = data.recentlyPlayed || [];
             data.recentlyPlayed.unshift(data.currentSong);
+            // Keep the list capped at 6 items (display limit), but increment the
+            // real playedCount counter so the embed can show the true total.
             if (data.recentlyPlayed.length > 6) data.recentlyPlayed = data.recentlyPlayed.slice(0, 6);
+            data.playedCount = (data.playedCount ?? 0) + 1;
             this.activeStreams.delete(data.currentSong.url);
           }
 
@@ -523,7 +530,14 @@ export class MusicManager {
     const player = this.audioPlayers.get(guildId);
     if (player && player.state.status === AudioPlayerStatus.Playing) {
       player.pause();
+      // Update isPaused eagerly so the snapshot in pushStatus is correct.
+      // (The AudioPlayerStatus.Paused event also sets this, but it fires async
+      // after the Discord edit — setting it here avoids the race.)
+      const data = this.getGuildData(guildId);
+      data.isPaused = true;
       logEvent('music_paused', { guildId });
+      // Bump version so the Announcer discards any in-flight "playing" edit
+      this.bumpAndPushStatus(guildId);
       return true;
     }
     return false;
@@ -533,7 +547,12 @@ export class MusicManager {
     const player = this.audioPlayers.get(guildId);
     if (player && player.state.status === AudioPlayerStatus.Paused) {
       player.unpause();
+      // Update isPaused eagerly (symmetric with pause above).
+      const data = this.getGuildData(guildId);
+      data.isPaused = false;
       logEvent('music_resumed', { guildId });
+      // Bump version so the Announcer discards any in-flight "paused" edit
+      this.bumpAndPushStatus(guildId);
       return true;
     }
     return false;
@@ -565,6 +584,7 @@ export class MusicManager {
     delete guildData.currentSongStartedAt;
     guildData.isPlaying = false;
     guildData.isPaused = false;
+    guildData.playedCount = 0;
 
     logEvent('music_stopped', { guildId });
     try {
@@ -573,19 +593,25 @@ export class MusicManager {
       /* ignore */
     }
 
-    // Reflect stopped state in status message
-    this.pushStatus(guildId);
+    // Reflect stopped state in status message — version bump
+    this.bumpAndPushStatus(guildId);
   }
 
-  skip(guildId: string): void {
+  skip(guildId: string, by?: string, byId?: string): void {
     // Kill yt-dlp pipe process first so the old download doesn't keep running
     this.killActiveYtdlpProcess(guildId, 'skip');
+
+    // Record who skipped for display in the status embed (mirrors lastShuffle pattern)
+    if (by) {
+      const data = this.getGuildData(guildId);
+      (data as any).lastSkip = { by, ...(byId ? { byId } : {}), at: Date.now() };
+    }
 
     const player = this.audioPlayers.get(guildId);
     if (player) {
       player.stop(); // This will trigger the 'idle' event and play next song
     }
-    logEvent('song_skipped', { guildId });
+    logEvent('song_skipped', { guildId, by: by ?? 'unknown' });
   }
 
   setVolume(guildId: string, volume: number): void {
@@ -633,8 +659,8 @@ export class MusicManager {
     // Re-evaluate prefetch targets after shuffle
     this.schedulePrefetch(guildId, 250);
 
-    // Update status message after shuffle
-    this.pushStatus(guildId);
+    // Update status message after shuffle — version bump
+    this.bumpAndPushStatus(guildId);
   }
 
   // Restore queue to the original insertion order (by stable queueId)
@@ -658,8 +684,8 @@ export class MusicManager {
     // Re-evaluate prefetch targets after order change
     this.schedulePrefetch(guildId, 250);
 
-    // Update status message after order change
-    this.pushStatus(guildId);
+    // Update status message after order change — version bump
+    this.bumpAndPushStatus(guildId);
   }
 
   clearQueue(guildId: string): void {
@@ -670,23 +696,31 @@ export class MusicManager {
 
     logEvent('queue_cleared', { guildId, removedCount });
 
-    // Reflect cleared queue in status message
-    this.pushStatus(guildId);
+    // Reflect cleared queue in status message — version bump
+    this.bumpAndPushStatus(guildId);
   }
 
   /**
    * Fire-and-forget Announcer status update for a guild.
-   * Builds the standard payload from guild data + voice connection and swallows errors
-   * (status updates are cosmetic — they must never crash the playback path).
+   * Builds an IMMUTABLE snapshot (queue is sliced, not the live reference) to
+   * prevent the render from seeing a later mutation if the Announcer awaits I/O
+   * before consuming the payload.  Also passes the current version so the
+   * Announcer can discard stale (out-of-order) async edits.
+   * Status updates are cosmetic — they must never crash the playback path.
    */
   private pushStatus(guildId: string): void {
     try {
       const guildData = this.getGuildData(guildId);
       const connection = this.voiceConnections.get(guildId);
+      // Take a copy of the queue at this moment — the live array may be mutated
+      // (shift/push) while the async render is still in flight.
       const payload: any = {
         currentSong: guildData.currentSong,
-        queue: guildData.queue,
-        recent: guildData.recentlyPlayed,
+        queue: guildData.queue.slice(), // snapshot, not live reference
+        recent: guildData.recentlyPlayed ? guildData.recentlyPlayed.slice() : [],
+        isPaused: guildData.isPaused,
+        version: guildData.version ?? 0,
+        playedCount: guildData.playedCount ?? 0,
       };
       const voiceChannelId = connection?.joinConfig?.channelId;
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
@@ -771,10 +805,23 @@ export class MusicManager {
         loopMode: 'off',
         nextQueueId: 1,
         shuffleEnabled: false,
+        version: 0,
+        playedCount: 0,
       };
       this.guildData.set(guildId, guildData);
     }
     return guildData;
+  }
+
+  /**
+   * Increment the state version for the guild and fire a status update.
+   * Every mutator that changes what the status embed shows must call this
+   * instead of pushStatus directly, so the version stays in sync.
+   */
+  private bumpAndPushStatus(guildId: string): void {
+    const g = this.getGuildData(guildId);
+    g.version = (g.version ?? 0) + 1;
+    this.pushStatus(guildId);
   }
 
   private startInactivityTimer(guildId: string): void {

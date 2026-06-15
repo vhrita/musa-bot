@@ -31,6 +31,12 @@ export interface GuildMusicData {
   shuffleEnabled?: boolean; // current play order mode
   inactivityTimer?: ReturnType<typeof setTimeout>;
   emptyChannelTimer?: ReturnType<typeof setTimeout>;
+  // State versioning — incremented by every mutator that affects what the
+  // status embed shows. Used by Announcer to discard stale (out-of-order)
+  // async edits. Starts at 0 when the guild record is first created.
+  version: number;
+  // Total tracks played in this session; reset on stop/truly-idle.
+  playedCount?: number;
 }
 
 export type ServiceType = 'youtube' | 'internet_archive' | 'radio' | 'spotify';
