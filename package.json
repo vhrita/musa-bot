@@ -11,6 +11,8 @@
     "cleanup:channel": "tsx scripts/cleanupChannel.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier -w .",
+    "typecheck": "tsc --noEmit",
     "test": "npm run build && jest --runInBand",
     "clean": "rm -rf dist"
   },
@@ -42,7 +44,9 @@
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.2",
     "jest": "^29.7.0",
+    "prettier": "^3.8.4",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },

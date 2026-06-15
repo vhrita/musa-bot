@@ -25,6 +25,7 @@
     "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
+    "useUnknownInCatchVariables": true,
     "useDefineForClassFields": true,
     "baseUrl": "./src",
     "paths": {
