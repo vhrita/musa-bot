@@ -1,23 +1,9 @@
 #!/bin/sh
 set -e
 
-# Diretório de cookies vindo do ambiente, default para /cookies
-COOKIES_DIR="${COOKIES_DIR:-/cookies}"
-
-# Garante que existe e é do usuário 'musa'
-mkdir -p "$COOKIES_DIR" || true
-# tenta ajustar permissão; se for volume com restrição, não falhe o start
-chown -R 1001:1001 "$COOKIES_DIR" 2>/dev/null || true
-
-# Se existe o arquivo cookies.txt, garante permissão de escrita
-if [ -f "$COOKIES_DIR/cookies.txt" ]; then
-    chmod 664 "$COOKIES_DIR/cookies.txt" 2>/dev/null || true
-    chown 1001:1001 "$COOKIES_DIR/cookies.txt" 2>/dev/null || true
-fi
-
-# idem para logs se você usa /app/logs
+# Ensure app logs directory exists and is owned by the musa user
 mkdir -p /app/logs || true
 chown -R 1001:1001 /app/logs 2>/dev/null || true
 
-# Troca para o usuário 'musa' e executa o comando
+# Switch to user 'musa' and execute the command
 exec su-exec 1001:1001 "$@"
