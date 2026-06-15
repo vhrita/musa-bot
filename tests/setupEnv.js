@@ -1,5 +1,11 @@
 // Jest setup: mock all runtime env for unit tests
 
+// Ensure NODE_ENV=test so config defaults (e.g. log level) use non-production values.
+// Jest sets this automatically when NODE_ENV is absent, but the `npm test` script runs
+// `npm run build && jest` which means the build step can leave NODE_ENV as-is (e.g.
+// "production"), and Jest inherits it. Pinning it here is the safest guarantee.
+process.env.NODE_ENV = 'test';
+
 process.env.DISCORD_TOKEN = 'test-token';
 process.env.DISCORD_CLIENT_ID = 'test-client-id';
 
@@ -22,4 +28,3 @@ process.env.PREFETCH_ENABLED = 'false';
 process.env.PREFETCH_COUNT = '0';
 process.env.PREFETCH_ALL = 'false';
 process.env.STREAM_CACHE_TTL_MINUTES = '10';
-

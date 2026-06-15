@@ -1,22 +1,22 @@
-import { 
-  VoiceConnection, 
-  AudioPlayer, 
-  createAudioPlayer, 
-  createAudioResource, 
-  AudioPlayerStatus, 
+import {
+  VoiceConnection,
+  AudioPlayer,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
   PlayerSubscription,
   joinVoiceChannel,
   VoiceConnectionStatus,
-  StreamType
-} from '@discordjs/voice';
-import { VoiceChannel } from 'discord.js';
-import { spawn } from 'child_process';
-import { PresenceManager } from './PresenceManager';
-import { Announcer } from './Announcer';
-import { GuildMusicData, QueuedSong, LoopMode } from '../types/music';
-import { MultiSourceManager } from '../services/MultiSourceManager';
-import { logEvent, logError, logWarning } from '../utils/logger';
-import { botConfig } from '../config';
+  StreamType,
+} from "@discordjs/voice";
+import { VoiceChannel } from "discord.js";
+import { spawn, ChildProcess } from "child_process";
+import { PresenceManager } from "./PresenceManager";
+import { Announcer } from "./Announcer";
+import { GuildMusicData, QueuedSong, LoopMode } from "../types/music";
+import { MultiSourceManager } from "../services/MultiSourceManager";
+import { logEvent, logError, logWarning } from "../utils/logger";
+import { botConfig } from "../config";
 
 export class MusicManager {
   private readonly guildData = new Map<string, GuildMusicData>();
@@ -24,36 +24,54 @@ export class MusicManager {
   private readonly voiceConnections = new Map<string, VoiceConnection>();
   private readonly playerSubscriptions = new Map<string, PlayerSubscription>();
   private readonly multiSourceManager: MultiSourceManager;
-  
+
   // Stream URL pre-caching system
-  private readonly streamCache = new Map<string, { url: string; timestamp: number; expiresAt?: number }>();
-  private readonly streamCacheTTL = botConfig.music.streamCacheTTL ?? 10 * 60 * 1000; // default 10 minutes
+  private readonly streamCache = new Map<
+    string,
+    { url: string; timestamp: number; expiresAt?: number }
+  >();
+  private readonly streamCacheTTL =
+    botConfig.music.streamCacheTTL ?? 10 * 60 * 1000; // default 10 minutes
   private readonly preloadingUrls = new Set<string>(); // Track URLs being preloaded
   private readonly activeStreams = new Set<string>(); // Track active streaming URLs
-  private readonly prefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly prefetchTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private cacheCleanupInterval?: ReturnType<typeof setInterval>;
+
+  // Active yt-dlp pipe processes per guild — killed on stop/skip/disconnect/error
+  private readonly activeYtdlpProcesses = new Map<string, ChildProcess>();
 
   constructor() {
     this.multiSourceManager = new MultiSourceManager();
-    
+
     // Clean up expired cache entries every 5 minutes (skip in tests)
-    if (process.env.NODE_ENV !== 'test') {
-      this.cacheCleanupInterval = setInterval(() => {
-        this.cleanupStreamCache();
-      }, 5 * 60 * 1000);
+    if (process.env.NODE_ENV !== "test") {
+      this.cacheCleanupInterval = setInterval(
+        () => {
+          this.cleanupStreamCache();
+        },
+        5 * 60 * 1000,
+      );
       // Do not keep the event loop alive solely for this timer
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (this.cacheCleanupInterval as any)?.unref?.();
     }
   }
 
-  async joinVoiceChannel(channel: VoiceChannel): Promise<VoiceConnection | null> {
+  async joinVoiceChannel(
+    channel: VoiceChannel,
+  ): Promise<VoiceConnection | null> {
     try {
       const guildId = channel.guild.id;
-      
+
       // Check if already connected to this channel
       const existingConnection = this.voiceConnections.get(guildId);
-      if (existingConnection && existingConnection.joinConfig.channelId === channel.id) {
+      if (
+        existingConnection &&
+        existingConnection.joinConfig.channelId === channel.id
+      ) {
         return existingConnection;
       }
 
@@ -69,29 +87,29 @@ export class MusicManager {
 
       // Set up connection event handlers
       connection.on(VoiceConnectionStatus.Ready, () => {
-        logEvent('voice_connection_ready', { guildId, channelId: channel.id });
+        logEvent("voice_connection_ready", { guildId, channelId: channel.id });
       });
 
       connection.on(VoiceConnectionStatus.Disconnected, () => {
-        logEvent('voice_connection_disconnected', { guildId });
+        logEvent("voice_connection_disconnected", { guildId });
         this.cleanup(guildId);
       });
 
-      connection.on('error', (error) => {
-        logError('Voice connection error', error, { guildId });
+      connection.on("error", (error) => {
+        logError("Voice connection error", error, { guildId });
       });
 
-      logEvent('joined_voice_channel', { 
-        guildId, 
-        channelId: channel.id, 
-        channelName: channel.name 
+      logEvent("joined_voice_channel", {
+        guildId,
+        channelId: channel.id,
+        channelName: channel.name,
       });
 
       return connection;
     } catch (error) {
-      logError('Failed to join voice channel', error as Error, { 
-        guildId: channel.guild.id, 
-        channelId: channel.id 
+      logError("Failed to join voice channel", error as Error, {
+        guildId: channel.guild.id,
+        channelId: channel.id,
       });
       return null;
     }
@@ -103,12 +121,12 @@ export class MusicManager {
       if (connection) {
         connection.destroy();
         this.voiceConnections.delete(guildId);
-        logEvent('left_voice_channel', { guildId });
+        logEvent("left_voice_channel", { guildId });
       }
-      
+
       this.cleanup(guildId);
     } catch (error) {
-      logError('Failed to leave voice channel', error as Error, { guildId });
+      logError("Failed to leave voice channel", error as Error, { guildId });
     }
   }
 
@@ -116,7 +134,10 @@ export class MusicManager {
     // Cancel all timers
     this.cancelInactivityTimer(guildId);
     this.cancelEmptyChannelTimer(guildId);
-    
+
+    // Kill any active yt-dlp pipe process to avoid zombies
+    this.killActiveYtdlpProcess(guildId, "cleanup");
+
     // Cleanup audio player
     const player = this.audioPlayers.get(guildId);
     if (player) {
@@ -140,30 +161,57 @@ export class MusicManager {
       guildData.isPaused = false;
     }
 
-    logEvent('music_manager_cleanup', { guildId });
+    logEvent("music_manager_cleanup", { guildId });
   }
 
-  async addToQueue(guildId: string, song: QueuedSong, requestedById?: string): Promise<void> {
+  /**
+   * Kill the active yt-dlp pipe process for this guild, if any.
+   * Safe to call even when no process is running.
+   */
+  private killActiveYtdlpProcess(guildId: string, reason: string): void {
+    const proc = this.activeYtdlpProcesses.get(guildId);
+    if (!proc) return;
+    this.activeYtdlpProcesses.delete(guildId);
+    try {
+      proc.kill("SIGKILL");
+      logEvent("youtube_pipe_stream_killed", { guildId, reason });
+    } catch {
+      // ignore — process may have already exited
+    }
+  }
+
+  async addToQueue(
+    guildId: string,
+    song: QueuedSong,
+    requestedById?: string,
+  ): Promise<void> {
     const guildData = this.getGuildData(guildId);
-    
+
     // Check queue size limit
     if (guildData.queue.length >= botConfig.music.maxQueueSize) {
-      throw new Error(`🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`);
+      throw new Error(
+        `🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`,
+      );
     }
     // Assign stable queueId for advanced play order if missing
-    if (typeof guildData.nextQueueId !== 'number') guildData.nextQueueId = 1;
-    if (typeof song.queueId !== 'number') song.queueId = guildData.nextQueueId++;
+    if (typeof guildData.nextQueueId !== "number") guildData.nextQueueId = 1;
+    if (typeof song.queueId !== "number")
+      song.queueId = guildData.nextQueueId++;
 
     guildData.queue.push(song);
     // Track last added meta for footer
-    guildData.lastAdded = { by: song.requestedBy, at: Date.now(), ...(requestedById ? { byId: requestedById } : {}) } as any;
-    
-    logEvent('song_added_to_queue', {
+    guildData.lastAdded = {
+      by: song.requestedBy,
+      at: Date.now(),
+      ...(requestedById ? { byId: requestedById } : {}),
+    } as any;
+
+    logEvent("song_added_to_queue", {
       guildId,
       title: song.title,
       service: song.service,
       queuePosition: guildData.queue.length,
-      requestedBy: song.requestedBy
+      requestedBy: song.requestedBy,
     });
 
     // Schedule prefetch for upcoming songs
@@ -179,11 +227,14 @@ export class MusicManager {
         recent: guildData.recentlyPlayed,
       };
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (typeof guildData.currentSongStartedAt === "number")
+        payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
@@ -194,36 +245,49 @@ export class MusicManager {
   }
 
   // Batch-add songs to queue with a single status update and prefetch scheduling
-  async addManyToQueue(guildId: string, songs: QueuedSong[], requestedById?: string): Promise<number> {
+  async addManyToQueue(
+    guildId: string,
+    songs: QueuedSong[],
+    requestedById?: string,
+  ): Promise<number> {
     const guildData = this.getGuildData(guildId);
 
     if (!Array.isArray(songs) || songs.length === 0) return 0;
 
-    const remainingCapacity = Math.max(0, botConfig.music.maxQueueSize - guildData.queue.length);
+    const remainingCapacity = Math.max(
+      0,
+      botConfig.music.maxQueueSize - guildData.queue.length,
+    );
     const toAdd = songs.slice(0, remainingCapacity);
 
     if (toAdd.length === 0) {
-      throw new Error(`🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`);
+      throw new Error(
+        `🎵 A playlist está lotada! Máximo de ${botConfig.music.maxQueueSize} músicas por vez! 🎶`,
+      );
     }
 
     // Ensure queueId assignment and push all items
-    if (typeof guildData.nextQueueId !== 'number') guildData.nextQueueId = 1;
+    if (typeof guildData.nextQueueId !== "number") guildData.nextQueueId = 1;
     for (const s of toAdd) {
-      if (typeof s.queueId !== 'number') s.queueId = guildData.nextQueueId++;
+      if (typeof s.queueId !== "number") s.queueId = guildData.nextQueueId++;
       guildData.queue.push(s);
     }
 
     // Track last added meta for footer using the last item
     const last = toAdd[toAdd.length - 1];
     if (last) {
-      guildData.lastAdded = { by: last.requestedBy, at: Date.now(), ...(requestedById ? { byId: requestedById } : {}) } as any;
+      guildData.lastAdded = {
+        by: last.requestedBy,
+        at: Date.now(),
+        ...(requestedById ? { byId: requestedById } : {}),
+      } as any;
     }
 
-    logEvent('songs_added_to_queue_batch', {
+    logEvent("songs_added_to_queue_batch", {
       guildId,
       added: toAdd.length,
-      requestedBy: last ? last.requestedBy : 'alguém',
-      queueLength: guildData.queue.length
+      requestedBy: last ? last.requestedBy : "alguém",
+      queueLength: guildData.queue.length,
     });
 
     // Schedule a single prefetch pass
@@ -239,11 +303,14 @@ export class MusicManager {
         recent: guildData.recentlyPlayed,
       };
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (typeof guildData.currentSongStartedAt === "number")
+        payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Start playing if nothing is currently playing
     if (!guildData.isPlaying && !guildData.currentSong) {
@@ -258,12 +325,12 @@ export class MusicManager {
     const connection = this.voiceConnections.get(guildId);
 
     if (!connection) {
-      logWarning('No voice connection for guild', { guildId });
+      logWarning("No voice connection for guild", { guildId });
       return;
     }
 
     // Handle loop mode
-    if (guildData.loopMode === 'song' && guildData.currentSong) {
+    if (guildData.loopMode === "song" && guildData.currentSong) {
       // Replay current song
       await this.playAudio(guildId, guildData.currentSong);
       return;
@@ -272,7 +339,7 @@ export class MusicManager {
     // Get next song from queue
     let nextSong: QueuedSong | null = null;
 
-    if (guildData.loopMode === 'queue' && guildData.currentSong) {
+    if (guildData.loopMode === "queue" && guildData.currentSong) {
       // Add current song back to end of queue
       guildData.queue.push(guildData.currentSong);
     }
@@ -289,22 +356,32 @@ export class MusicManager {
       guildData.recentlyPlayed = [];
       guildData.isPlaying = false;
       guildData.isPaused = false;
-      
+
       this.startInactivityTimer(guildId);
       // Start idle presence cycle (rotating phrases)
-      try { PresenceManager.startIdleCycle(); } catch { /* ignore */ }
-      
+      try {
+        PresenceManager.startIdleCycle();
+      } catch {
+        /* ignore */
+      }
+
       // Update status message to reflect silence/empty queue
       try {
         const connection = this.voiceConnections.get(guildId);
         const voiceChannelId = connection?.joinConfig?.channelId;
-      const payload: any = { currentSong: null, queue: guildData.queue, recent: guildData.recentlyPlayed };
-      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
-      void Announcer.updateGuildStatus(guildId, payload);
-      } catch { /* ignore */ }
+        const payload: any = {
+          currentSong: null,
+          queue: guildData.queue,
+          recent: guildData.recentlyPlayed,
+        };
+        if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
+        if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
+        void Announcer.updateGuildStatus(guildId, payload);
+      } catch {
+        /* ignore */
+      }
 
-      logEvent('queue_finished', { guildId });
+      logEvent("queue_finished", { guildId });
       return;
     }
 
@@ -316,31 +393,31 @@ export class MusicManager {
     try {
       const connection = this.voiceConnections.get(guildId);
       if (!connection) {
-        throw new Error('No voice connection');
+        throw new Error("No voice connection");
       }
 
       const guildData = this.getGuildData(guildId);
 
-      logEvent('creating_audio_resource', {
+      logEvent("creating_audio_resource", {
         guildId,
         title: song.title,
         url: song.url,
-        service: song.service
+        service: song.service,
       });
 
       // Create audio resource based on service type
       let resource;
-      if (song.service === 'radio' || song.service === 'internet_archive') {
+      if (song.service === "radio" || song.service === "internet_archive") {
         resource = await this.createRadioResource(song.url);
-      } else if (song.service === 'youtube') {
+      } else if (song.service === "youtube") {
         resource = await this.createYouTubeStreamResource(guildId, song);
       } else {
         resource = createAudioResource(song.url, {
           inlineVolume: true,
           metadata: {
             title: song.title,
-            service: song.service
-          }
+            service: song.service,
+          },
         });
       }
 
@@ -362,10 +439,10 @@ export class MusicManager {
           this.cancelInactivityTimer(guildId);
 
           const current = data.currentSong;
-          logEvent('audio_player_playing', { 
-            guildId, 
+          logEvent("audio_player_playing", {
+            guildId,
             title: current?.title,
-            service: current?.service 
+            service: current?.service,
           });
 
           // Prefetch upcoming songs when playback stabilizes
@@ -374,49 +451,80 @@ export class MusicManager {
           // Update global presence to show current track
           try {
             if (current) {
-              const presenceText = current.creator ? `${current.title} — ${current.creator}` : current.title;
-              PresenceManager.updatePlayingPresence(presenceText.substring(0, 120));
+              const presenceText = current.creator
+                ? `${current.title} — ${current.creator}`
+                : current.title;
+              PresenceManager.updatePlayingPresence(
+                presenceText.substring(0, 120),
+              );
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           // Announce in the Musa channel with embed and optional thumbnail
           try {
             const connection = this.voiceConnections.get(guildId);
             const voiceChannelId = connection?.joinConfig?.channelId;
-            const payload: any = { currentSong: current, queue: data.queue, recent: data.recentlyPlayed };
+            const payload: any = {
+              currentSong: current,
+              queue: data.queue,
+              recent: data.recentlyPlayed,
+            };
             if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-            if (typeof data.currentSongStartedAt === 'number') payload.startedAt = data.currentSongStartedAt;
+            if (typeof data.currentSongStartedAt === "number")
+              payload.startedAt = data.currentSongStartedAt;
             if (data.lastShuffle) payload.lastShuffle = data.lastShuffle;
             if (data.lastAdded) payload.lastAdded = data.lastAdded;
             void Announcer.updateGuildStatus(guildId, payload);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           // If current song lacks thumbnail, fetch lightweight metadata and update status
           try {
-            if (current && current.service === 'youtube' && !current.thumbnail) {
-              const yt = this.multiSourceManager.getService('youtube') as any;
+            if (
+              current &&
+              current.service === "youtube" &&
+              !current.thumbnail
+            ) {
+              const yt = this.multiSourceManager.getService("youtube") as any;
               if (yt?.fetchMeta) {
-                void yt.fetchMeta(current.url).then((meta: any) => {
-                  if (meta?.thumbnail && data.currentSong && data.currentSong.url === current.url) {
-                    (data.currentSong as any).thumbnail = meta.thumbnail;
-                    const vc = this.voiceConnections.get(guildId);
-                    const vId = vc?.joinConfig?.channelId;
-                    const pld: any = { currentSong: data.currentSong, queue: data.queue, recent: data.recentlyPlayed };
-                    if (vId) pld.voiceChannelId = vId;
-                    if (typeof data.currentSongStartedAt === 'number') pld.startedAt = data.currentSongStartedAt;
-                    if (data.lastShuffle) pld.lastShuffle = data.lastShuffle;
-                    if (data.lastAdded) pld.lastAdded = data.lastAdded;
-                    void Announcer.updateGuildStatus(guildId, pld);
-                  }
-                }).catch(() => {});
+                void yt
+                  .fetchMeta(current.url)
+                  .then((meta: any) => {
+                    if (
+                      meta?.thumbnail &&
+                      data.currentSong &&
+                      data.currentSong.url === current.url
+                    ) {
+                      (data.currentSong as any).thumbnail = meta.thumbnail;
+                      const vc = this.voiceConnections.get(guildId);
+                      const vId = vc?.joinConfig?.channelId;
+                      const pld: any = {
+                        currentSong: data.currentSong,
+                        queue: data.queue,
+                        recent: data.recentlyPlayed,
+                      };
+                      if (vId) pld.voiceChannelId = vId;
+                      if (typeof data.currentSongStartedAt === "number")
+                        pld.startedAt = data.currentSongStartedAt;
+                      if (data.lastShuffle) pld.lastShuffle = data.lastShuffle;
+                      if (data.lastAdded) pld.lastAdded = data.lastAdded;
+                      void Announcer.updateGuildStatus(guildId, pld);
+                    }
+                  })
+                  .catch(() => {});
               }
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         });
 
         player.on(AudioPlayerStatus.Paused, () => {
           guildData.isPaused = true;
-          logEvent('audio_player_paused', { guildId });
+          logEvent("audio_player_paused", { guildId });
         });
 
         player.on(AudioPlayerStatus.Idle, async () => {
@@ -428,27 +536,28 @@ export class MusicManager {
           if (data.currentSong) {
             data.recentlyPlayed = data.recentlyPlayed || [];
             data.recentlyPlayed.unshift(data.currentSong);
-            if (data.recentlyPlayed.length > 6) data.recentlyPlayed = data.recentlyPlayed.slice(0, 6);
+            if (data.recentlyPlayed.length > 6)
+              data.recentlyPlayed = data.recentlyPlayed.slice(0, 6);
             this.activeStreams.delete(data.currentSong.url);
           }
 
-          logEvent('audio_player_idle', { guildId });
+          logEvent("audio_player_idle", { guildId });
 
           // Play next song
           await this.playNext(guildId);
         });
 
-        player.on('error', (error) => {
+        player.on("error", (error) => {
           const data = this.getGuildData(guildId);
           // Clean up active stream tracking
           if (data.currentSong) {
             this.activeStreams.delete(data.currentSong.url);
           }
 
-          logError('Audio player error', error, { 
-            guildId, 
+          logError("Audio player error", error, {
+            guildId,
             title: data.currentSong?.title,
-            service: data.currentSong?.service 
+            service: data.currentSong?.service,
           });
 
           // Try to play next song on error
@@ -463,33 +572,32 @@ export class MusicManager {
       }
 
       // Add error listener to the resource
-      resource.playStream.on('error', (error: Error) => {
-        logError('Audio resource stream error', error, {
+      resource.playStream.on("error", (error: Error) => {
+        logError("Audio resource stream error", error, {
           guildId,
           title: song.title,
           url: song.url,
-          service: song.service
+          service: song.service,
         });
       });
 
       // Play the resource
       player.play(resource);
 
-      logEvent('playing_song', {
+      logEvent("playing_song", {
         guildId,
         title: song.title,
         service: song.service,
         requestedBy: song.requestedBy,
-        queueLength: guildData.queue.length
+        queueLength: guildData.queue.length,
+      });
+    } catch (error) {
+      logError("Failed to play audio", error as Error, {
+        guildId,
+        title: song.title,
+        service: song.service,
       });
 
-    } catch (error) {
-      logError('Failed to play audio', error as Error, { 
-        guildId, 
-        title: song.title,
-        service: song.service 
-      });
-      
       // Try next song on error
       await this.playNext(guildId);
     }
@@ -499,7 +607,7 @@ export class MusicManager {
     const player = this.audioPlayers.get(guildId);
     if (player && player.state.status === AudioPlayerStatus.Playing) {
       player.pause();
-      logEvent('music_paused', { guildId });
+      logEvent("music_paused", { guildId });
       return true;
     }
     return false;
@@ -509,7 +617,7 @@ export class MusicManager {
     const player = this.audioPlayers.get(guildId);
     if (player && player.state.status === AudioPlayerStatus.Paused) {
       player.unpause();
-      logEvent('music_resumed', { guildId });
+      logEvent("music_resumed", { guildId });
       return true;
     }
     return false;
@@ -521,13 +629,16 @@ export class MusicManager {
       player.stop();
     }
 
+    // Kill any active yt-dlp pipe process immediately
+    this.killActiveYtdlpProcess(guildId, "stop");
+
     const guildData = this.getGuildData(guildId);
     // Cancel any scheduled prefetch for this guild
     const t = this.prefetchTimers.get(guildId);
     if (t) {
       clearTimeout(t);
       this.prefetchTimers.delete(guildId);
-      logEvent('prefetch_timer_cleared', { guildId });
+      logEvent("prefetch_timer_cleared", { guildId });
     }
     // Clear active stream tracking for current song (if any)
     if (guildData.currentSong) {
@@ -539,8 +650,12 @@ export class MusicManager {
     guildData.isPlaying = false;
     guildData.isPaused = false;
 
-    logEvent('music_stopped', { guildId });
-    try { PresenceManager.startIdleCycle(); } catch { /* ignore */ }
+    logEvent("music_stopped", { guildId });
+    try {
+      PresenceManager.startIdleCycle();
+    } catch {
+      /* ignore */
+    }
 
     // Reflect stopped state in status message
     try {
@@ -549,15 +664,20 @@ export class MusicManager {
       const data = this.getGuildData(guildId);
       if (data.lastAdded) payload.lastAdded = data.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   skip(guildId: string): void {
+    // Kill yt-dlp pipe process first so the old download doesn't keep running
+    this.killActiveYtdlpProcess(guildId, "skip");
+
     const player = this.audioPlayers.get(guildId);
     if (player) {
       player.stop(); // This will trigger the 'idle' event and play next song
     }
-    logEvent('song_skipped', { guildId });
+    logEvent("song_skipped", { guildId });
   }
 
   setVolume(guildId: string, volume: number): void {
@@ -568,19 +688,19 @@ export class MusicManager {
     if (player && player.state.status === AudioPlayerStatus.Playing) {
       // Volume changes require restarting the audio
       // This is a limitation of discord.js voice
-      logEvent('volume_changed', { guildId, volume: guildData.volume });
+      logEvent("volume_changed", { guildId, volume: guildData.volume });
     }
   }
 
   setLoopMode(guildId: string, mode: LoopMode): void {
     const guildData = this.getGuildData(guildId);
     guildData.loopMode = mode;
-    logEvent('loop_mode_changed', { guildId, mode });
+    logEvent("loop_mode_changed", { guildId, mode });
   }
 
   shuffleQueue(guildId: string, by?: string, byId?: string): void {
     const guildData = this.getGuildData(guildId);
-    
+
     // Shuffle array using Fisher-Yates algorithm
     for (let i = guildData.queue.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -590,13 +710,17 @@ export class MusicManager {
         [guildData.queue[i], guildData.queue[j]] = [itemJ, itemI];
       }
     }
-    
+
     // Mark last shuffle meta
-    const ls: any = { by: by || 'alguém', at: Date.now() };
+    const ls: any = { by: by || "alguém", at: Date.now() };
     if (byId) ls.byId = byId;
     guildData.lastShuffle = ls;
     guildData.shuffleEnabled = true;
-    logEvent('queue_shuffled', { guildId, queueLength: guildData.queue.length, by: ls.by });
+    logEvent("queue_shuffled", {
+      guildId,
+      queueLength: guildData.queue.length,
+      by: ls.by,
+    });
 
     // Re-evaluate prefetch targets after shuffle
     this.schedulePrefetch(guildId, 250);
@@ -611,11 +735,14 @@ export class MusicManager {
         recent: guildData.recentlyPlayed,
       };
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (typeof guildData.currentSongStartedAt === "number")
+        payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Restore queue to the original insertion order (by stable queueId)
@@ -623,13 +750,24 @@ export class MusicManager {
     const guildData = this.getGuildData(guildId);
     // Sort by queueId asc, falling back to addedAt when missing
     guildData.queue.sort((a, b) => {
-      const ai = typeof a.queueId === 'number' ? a.queueId : Number(a.addedAt?.getTime?.() ?? 0);
-      const bi = typeof b.queueId === 'number' ? b.queueId : Number(b.addedAt?.getTime?.() ?? 0);
+      const ai =
+        typeof a.queueId === "number"
+          ? a.queueId
+          : Number(a.addedAt?.getTime?.() ?? 0);
+      const bi =
+        typeof b.queueId === "number"
+          ? b.queueId
+          : Number(b.addedAt?.getTime?.() ?? 0);
       return ai - bi;
     });
 
     guildData.shuffleEnabled = false;
-    logEvent('queue_restored_original_order', { guildId, queueLength: guildData.queue.length, by: by || 'alguém', byId });
+    logEvent("queue_restored_original_order", {
+      guildId,
+      queueLength: guildData.queue.length,
+      by: by || "alguém",
+      byId,
+    });
 
     // Re-evaluate prefetch targets after order change
     this.schedulePrefetch(guildId, 250);
@@ -644,11 +782,14 @@ export class MusicManager {
         recent: guildData.recentlyPlayed,
       };
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (typeof guildData.currentSongStartedAt === "number")
+        payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle; // keep last shuffle meta
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   clearQueue(guildId: string): void {
@@ -656,8 +797,8 @@ export class MusicManager {
     const removedCount = guildData.queue.length;
     guildData.queue = [];
     // Keep recently played as-is here (cleared when truly idle or stop)
-    
-    logEvent('queue_cleared', { guildId, removedCount });
+
+    logEvent("queue_cleared", { guildId, removedCount });
 
     // Reflect cleared queue in status message
     try {
@@ -669,16 +810,19 @@ export class MusicManager {
         recent: guildData.recentlyPlayed,
       };
       if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+      if (typeof guildData.currentSongStartedAt === "number")
+        payload.startedAt = guildData.currentSongStartedAt;
       if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
       if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
       void Announcer.updateGuildStatus(guildId, payload);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Schedules a prefetch pass for this guild (debounced)
   private schedulePrefetch(guildId: string, delayMs: number = 250): void {
-    if (process.env.NODE_ENV === 'test') return;
+    if (process.env.NODE_ENV === "test") return;
     if (!botConfig.music.prefetchEnabled) return;
     const existing = this.prefetchTimers.get(guildId);
     if (existing) clearTimeout(existing);
@@ -699,37 +843,53 @@ export class MusicManager {
     if (guildData.queue.length === 0) return;
 
     // Decide how many to prefetch
-    const count = botConfig.music.prefetchAll ? guildData.queue.length : Math.max(0, botConfig.music.prefetchCount ?? 2);
+    const count = botConfig.music.prefetchAll
+      ? guildData.queue.length
+      : Math.max(0, botConfig.music.prefetchCount ?? 2);
     const candidates = guildData.queue.slice(0, count);
 
     let metaUpdated = false;
     for (const song of candidates) {
       // Only prefetch YouTube non-live
-      if (song.service !== 'youtube' || song.isLiveStream) continue;
+      if (song.service !== "youtube" || song.isLiveStream) continue;
       // Skip if currently streaming this URL
       if (this.activeStreams.has(song.url)) continue;
       // Skip if cached and fresh
       const cached = this.streamCache.get(song.url);
       if (cached) {
-        const freshByTtl = Date.now() - cached.timestamp < this.streamCacheTTL * 0.8;
-        const nearExpire = typeof cached.expiresAt === 'number' ? (cached.expiresAt - Date.now() < 5 * 60 * 1000) : false;
+        const freshByTtl =
+          Date.now() - cached.timestamp < this.streamCacheTTL * 0.8;
+        const nearExpire =
+          typeof cached.expiresAt === "number"
+            ? cached.expiresAt - Date.now() < 5 * 60 * 1000
+            : false;
         if (freshByTtl && !nearExpire) {
           continue; // fresh enough and not expiring soon
         }
         if (nearExpire) {
-          logEvent('stream_cache_near_expire', { url: song.url, inSeconds: Math.max(0, Math.round((cached.expiresAt! - Date.now())/1000)) });
+          logEvent("stream_cache_near_expire", {
+            url: song.url,
+            inSeconds: Math.max(
+              0,
+              Math.round((cached.expiresAt! - Date.now()) / 1000),
+            ),
+          });
         }
       }
       try {
         await this.preloadStreamUrl(song);
       } catch (err) {
-        logError('Prefetch failed for song', err as Error, { guildId, title: song.title, url: song.url });
+        logError("Prefetch failed for song", err as Error, {
+          guildId,
+          title: song.title,
+          url: song.url,
+        });
       }
 
       // Fetch thumbnail metadata if missing
       try {
         if (!song.thumbnail) {
-          const yt = this.multiSourceManager.getService('youtube') as any;
+          const yt = this.multiSourceManager.getService("youtube") as any;
           if (yt?.fetchMeta) {
             const meta = await yt.fetchMeta(song.url);
             if (meta?.thumbnail) {
@@ -738,7 +898,9 @@ export class MusicManager {
             }
           }
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // If we filled any thumbnails, update status once
@@ -746,29 +908,67 @@ export class MusicManager {
       try {
         const connection = this.voiceConnections.get(guildId);
         const voiceChannelId = connection?.joinConfig?.channelId;
-        const payload: any = { currentSong: guildData.currentSong, queue: guildData.queue, recent: guildData.recentlyPlayed };
+        const payload: any = {
+          currentSong: guildData.currentSong,
+          queue: guildData.queue,
+          recent: guildData.recentlyPlayed,
+        };
         if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-        if (typeof guildData.currentSongStartedAt === 'number') payload.startedAt = guildData.currentSongStartedAt;
+        if (typeof guildData.currentSongStartedAt === "number")
+          payload.startedAt = guildData.currentSongStartedAt;
         if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
         if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
         void Announcer.updateGuildStatus(guildId, payload);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   }
 
-  // Resolve and cache the stream URL for a song
+  // Resolve and cache the stream URL for a song.
+  // NOTE: For the direct YouTubeService (pipe mode), stream URL pre-caching is
+  // intentionally a no-op — the pipe approach downloads bytes at play-time
+  // directly through WARP and there is no stable URL to cache.  The prefetch
+  // pass still fetches thumbnail metadata for queue display (see prefetchUpcoming).
   private async preloadStreamUrl(song: QueuedSong): Promise<void> {
     if (this.preloadingUrls.has(song.url)) return;
     if (this.activeStreams.has(song.url)) return;
+
+    // With the pipe strategy, YouTubeService exposes spawnPipeStream (not getStreamUrl
+    // as a cacheable URL).  Skip URL preloading for YouTube — it would call getStreamUrl
+    // which resolves a googlevideo URL that is IP-locked and would 403 at play-time anyway.
+    if (song.service === "youtube") {
+      const youtubeService = this.multiSourceManager.getService(
+        "youtube",
+      ) as any;
+      if (youtubeService?.spawnPipeStream) {
+        logEvent("stream_preload_skipped_pipe_mode", {
+          title: song.title,
+          url: song.url,
+          reason: "YouTube uses pipe — no URL to cache",
+        });
+        return;
+      }
+    }
+
     this.preloadingUrls.add(song.url);
     try {
-      logEvent('stream_preload_started', { title: song.title, url: song.url, service: song.service });
-      const youtubeService = this.multiSourceManager.getService('youtube') as any;
+      logEvent("stream_preload_started", {
+        title: song.title,
+        url: song.url,
+        service: song.service,
+      });
+      const youtubeService = this.multiSourceManager.getService(
+        "youtube",
+      ) as any;
       if (youtubeService?.getStreamUrl) {
         const streamUrl = await youtubeService.getStreamUrl(song);
         if (streamUrl) {
           this.setCachedStreamUrl(song.url, streamUrl);
-          logEvent('stream_preload_completed', { title: song.title, url: song.url });
+          logEvent("stream_preload_completed", {
+            title: song.title,
+            url: song.url,
+          });
         }
       }
     } finally {
@@ -778,28 +978,28 @@ export class MusicManager {
 
   private getGuildData(guildId: string): GuildMusicData {
     let guildData = this.guildData.get(guildId);
-      if (!guildData) {
-        guildData = {
-          queue: [],
-          currentSong: null,
-          volume: 50,
-          isPlaying: false,
-          isPaused: false,
-          loopMode: 'off',
-          nextQueueId: 1,
-          shuffleEnabled: false,
-        };
-        this.guildData.set(guildId, guildData);
-      }
-      return guildData;
+    if (!guildData) {
+      guildData = {
+        queue: [],
+        currentSong: null,
+        volume: 50,
+        isPlaying: false,
+        isPaused: false,
+        loopMode: "off",
+        nextQueueId: 1,
+        shuffleEnabled: false,
+      };
+      this.guildData.set(guildId, guildData);
     }
+    return guildData;
+  }
 
   private startInactivityTimer(guildId: string): void {
     this.cancelInactivityTimer(guildId);
-    
+
     const guildData = this.getGuildData(guildId);
     const t = setTimeout(() => {
-      logEvent('inactivity_timeout', { guildId });
+      logEvent("inactivity_timeout", { guildId });
       void this.leaveVoiceChannel(guildId);
     }, botConfig.music.inactivityTimeout);
     // Do not hold the event loop open for this timer
@@ -807,9 +1007,9 @@ export class MusicManager {
     (t as any)?.unref?.();
     guildData.inactivityTimer = t;
 
-    logEvent('inactivity_timer_started', { 
-      guildId, 
-      timeout: botConfig.music.inactivityTimeout 
+    logEvent("inactivity_timer_started", {
+      guildId,
+      timeout: botConfig.music.inactivityTimeout,
     });
   }
 
@@ -818,16 +1018,16 @@ export class MusicManager {
     if (guildData?.inactivityTimer) {
       clearTimeout(guildData.inactivityTimer);
       delete guildData.inactivityTimer;
-      logEvent('inactivity_timer_cancelled', { guildId });
+      logEvent("inactivity_timer_cancelled", { guildId });
     }
   }
 
   private startEmptyChannelTimer(guildId: string): void {
     this.cancelEmptyChannelTimer(guildId);
-    
+
     const guildData = this.getGuildData(guildId);
     const t = setTimeout(() => {
-      logEvent('empty_channel_timeout', { guildId });
+      logEvent("empty_channel_timeout", { guildId });
       void this.leaveVoiceChannel(guildId);
     }, botConfig.music.emptyChannelTimeout);
     // Do not hold the event loop open for this timer
@@ -835,9 +1035,9 @@ export class MusicManager {
     (t as any)?.unref?.();
     guildData.emptyChannelTimer = t;
 
-    logEvent('empty_channel_timer_started', { 
-      guildId, 
-      timeout: botConfig.music.emptyChannelTimeout 
+    logEvent("empty_channel_timer_started", {
+      guildId,
+      timeout: botConfig.music.emptyChannelTimeout,
     });
   }
 
@@ -846,18 +1046,18 @@ export class MusicManager {
     if (guildData?.emptyChannelTimer) {
       clearTimeout(guildData.emptyChannelTimer);
       delete guildData.emptyChannelTimer;
-      logEvent('empty_channel_timer_cancelled', { guildId });
+      logEvent("empty_channel_timer_cancelled", { guildId });
     }
   }
 
   // Public method to handle voice state updates from the bot
   handleVoiceChannelEmpty(guildId: string): void {
-    logEvent('voice_channel_empty', { guildId });
+    logEvent("voice_channel_empty", { guildId });
     this.startEmptyChannelTimer(guildId);
   }
 
   handleVoiceChannelOccupied(guildId: string): void {
-    logEvent('voice_channel_not_empty', { guildId });
+    logEvent("voice_channel_not_empty", { guildId });
     this.cancelEmptyChannelTimer(guildId);
   }
 
@@ -882,249 +1082,149 @@ export class MusicManager {
   private async createYouTubeStreamResource(guildId: string, song: QueuedSong) {
     // Mark as active stream to prevent conflicts
     this.activeStreams.add(song.url);
-    
+
+    // Kill any previous yt-dlp process for this guild before starting a new one
+    this.killActiveYtdlpProcess(guildId, "new_song_replacing_previous");
+
     try {
-      // For YouTube, try cached stream URL first, then get fresh one
-      let streamUrl = this.getCachedStreamUrl(song.url);
-      // If cached but near expiry (proxy embeds expire parameter), refresh it
-      if (streamUrl && this.isProxyStreamNearExpiry(streamUrl)) {
-        logEvent('stream_url_near_expiry_refresh', { url: song.url });
-        try {
-          const refreshed = await this.refreshStreamUrl(song);
-          if (refreshed) streamUrl = refreshed;
-        } catch (e) {
-          // keep older one as fallback
-        }
-      }
-      if (!streamUrl) {
-        streamUrl = await this.getStreamUrlWithCache(song);
-      }
-      
-      if (streamUrl) {
-        // Use FFmpeg for YouTube streams with retry logic
-        return await this.createYouTubeResource(streamUrl, song.title, { guildId, songUrl: song.url });
-      } else {
-        throw new Error('Failed to get YouTube stream URL');
-      }
+      return await this.createYouTubePipeResource(guildId, song);
     } catch (error) {
-      logError('YouTube stream failed, trying direct URL fallback', error as Error, {
+      this.activeStreams.delete(song.url);
+      logError("YouTube pipe stream failed", error as Error, {
         title: song.title,
-        url: song.url
+        url: song.url,
+        guildId,
       });
-      
-      // Fallback: try direct YouTube URL (may work in some cases)
+      throw error;
+    }
+  }
+
+  /**
+   * Create an AudioResource by piping yt-dlp stdout directly into
+   * @discordjs/voice — yt-dlp downloads through the WARP proxy and ffmpeg
+   * (internal to @discordjs/voice) never touches the network.
+   *
+   * The yt-dlp process handle is stored in activeYtdlpProcesses so it can be
+   * killed on stop/skip/disconnect.
+   */
+  private async createYouTubePipeResource(guildId: string, song: QueuedSong) {
+    const youtubeService = this.multiSourceManager.getService("youtube") as any;
+
+    if (!youtubeService?.spawnPipeStream) {
+      throw new Error(
+        "YouTubeService.spawnPipeStream not available — cannot create pipe resource",
+      );
+    }
+
+    logEvent("youtube_pipe_resource_creating", {
+      guildId,
+      title: song.title,
+      url: song.url,
+    });
+
+    const ytdlpProc = youtubeService.spawnPipeStream(song);
+
+    if (!ytdlpProc.stdout) {
+      // This should never happen given stdio: ['ignore', 'pipe', 'pipe']
       try {
-        const directStreamUrl = await this.getDirectStreamUrl(song);
-        if (directStreamUrl) {
-          return await this.createYouTubeResource(directStreamUrl, song.title, { guildId, songUrl: song.url });
-        } else {
-          throw new Error('All YouTube streaming methods failed');
-        }
-      } catch (fallbackError) {
-        this.activeStreams.delete(song.url);
-        throw fallbackError;
-      }
-    }
-  }
-
-  // If proxy URL contains an inner googlevideo with expire param that is close to now, return true
-  private isProxyStreamNearExpiry(proxyUrl: string): boolean {
-    try {
-      if (!proxyUrl.includes('/proxy-stream')) return false;
-      const u = new URL(proxyUrl);
-      const inner = u.searchParams.get('url');
-      if (!inner) return false;
-      const innerUrl = new URL(inner);
-      const expire = innerUrl.searchParams.get('expire');
-      if (!expire) return false;
-      const expireSec = parseInt(expire, 10);
-      if (Number.isNaN(expireSec)) return false;
-      const nowSec = Math.floor(Date.now() / 1000);
-      // Consider near expiry if less than 120s remaining
-      return expireSec - nowSec <= 120;
-    } catch {
-      return false;
-    }
-  }
-
-  private async refreshStreamUrl(song: QueuedSong): Promise<string | null> {
-    const youtubeService = this.multiSourceManager.getService('youtube') as any;
-    if (youtubeService?.getStreamUrl) {
-      const streamUrl = await youtubeService.getStreamUrl(song);
-      if (streamUrl) {
-        this.setCachedStreamUrl(song.url, streamUrl);
-        return streamUrl;
-      }
-    }
-    return null;
-  }
-
-  private async createYouTubeResource(streamUrl: string, title: string, ctx?: { guildId?: string; songUrl?: string }) {
-    const meta = this.sanitizeStreamMeta(streamUrl);
-    logEvent('creating_youtube_resource', { title, ...meta, ...(ctx || {}) });
-
-    // Simplified FFmpeg arguments without aggressive reconnection that causes multiple simultaneous requests
-    const ffmpegArgs = [
-      '-loglevel', 'error',              // Reduce FFmpeg logging
-      '-re',                             // Read input at native frame rate (prevents rushing)
-      '-i', streamUrl,
-      '-acodec', 'pcm_s16le',           // Direct PCM conversion
-      '-f', 's16le',
-      '-ar', '48000',
-      '-ac', '2',
-      'pipe:1'
-    ];
-
-    const sanitizedArgs = ffmpegArgs.map(arg => {
-      if (typeof arg === 'string' && (arg.startsWith('http://') || arg.startsWith('https://'))) {
-        return '[REDACTED_URL]';
-      }
-      return arg;
-    });
-    logEvent('youtube_ffmpeg_command', {
-      title,
-      command: 'ffmpeg',
-      args: sanitizedArgs,
-      ...meta,
-      ...(ctx || {})
-    });
-
-    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'] // Capture stderr for debugging
-    });
-
-    // Helper to safely terminate FFmpeg to avoid lingering processes
-    let ffmpegExited = false;
-    const killFfmpeg = (reason: string) => {
-      if (ffmpegExited) return;
-      try {
-        ffmpegProcess.kill('SIGKILL');
-        logEvent('youtube_ffmpeg_killed', { title, reason, ...meta, ...(ctx || {}) });
+        ytdlpProc.kill("SIGKILL");
       } catch {
-        // ignore
+        /* ignore */
       }
-    };
-
-    // Log FFmpeg errors to understand what's happening
-    if (ffmpegProcess.stderr) {
-      ffmpegProcess.stderr.on('data', (data) => {
-        const errorMsg = data.toString();
-        if (errorMsg.includes('HTTP error') || errorMsg.includes('Server returned')) {
-          logError('FFmpeg HTTP error', new Error(errorMsg), {
-            title,
-            ...meta,
-            ...(ctx || {})
-          });
-        }
-      });
+      throw new Error("yt-dlp pipe process has no stdout");
     }
 
-    ffmpegProcess.on('error', (error: Error) => {
-      logError('YouTube FFmpeg process error', error, {
-        title,
-        pid: ffmpegProcess.pid,
-        ...meta,
-        ...(ctx || {})
-      });
+    // Track the process so we can SIGKILL it on stop/skip/disconnect
+    this.activeYtdlpProcesses.set(guildId, ytdlpProc);
+
+    logEvent("youtube_pipe_resource_created", {
+      guildId,
+      title: song.title,
+      pid: ytdlpProc.pid,
     });
 
-    ffmpegProcess.on('exit', (code: number | null) => {
-      ffmpegExited = true;
-      logEvent('youtube_ffmpeg_process_exit', {
-        title,
-        exitCode: code,
-        ...meta,
-        ...(ctx || {})
-      });
-    });
-
-    if (!ffmpegProcess.stdout) {
-      throw new Error('Failed to create YouTube ffmpeg process stdout');
-    }
-
-    logEvent('youtube_ffmpeg_process_created', {
-      title,
-      pid: ffmpegProcess.pid,
-      ...meta,
-      ...(ctx || {})
-    });
-
-    // Create audio resource from ffmpeg output
-    const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
+    // @discordjs/voice StreamType.Arbitrary: voice will spawn its own ffmpeg
+    // to transcode whatever format yt-dlp emits (webm/m4a) into opus for Discord.
+    const resource = createAudioResource(ytdlpProc.stdout, {
+      inputType: StreamType.Arbitrary,
       inlineVolume: true,
-      metadata: {
-        title: title
-      }
+      metadata: { title: song.title },
     });
 
-    logEvent('youtube_audio_resource_created', {
-      title,
-      type: 'pcm_stream',
-      ...meta,
-      ...(ctx || {})
-    });
-
-    // Ensure FFmpeg is terminated if the player/stream finishes or is stopped
-    if (resource.playStream && typeof (resource.playStream as any).once === 'function') {
-      (resource.playStream as any).once('close', () => killFfmpeg('play_stream_closed'));
-      (resource.playStream as any).once('end', () => killFfmpeg('play_stream_ended'));
-      (resource.playStream as any).once('error', () => killFfmpeg('play_stream_error'));
+    // When the play stream ends/closes/errors, also kill the yt-dlp process
+    // (in case the resource is discarded before the player fires its own events)
+    if (
+      resource.playStream &&
+      typeof (resource.playStream as any).once === "function"
+    ) {
+      (resource.playStream as any).once("close", () => {
+        this.killActiveYtdlpProcess(guildId, "play_stream_closed");
+      });
+      (resource.playStream as any).once("end", () => {
+        this.killActiveYtdlpProcess(guildId, "play_stream_ended");
+      });
+      (resource.playStream as any).once("error", () => {
+        this.killActiveYtdlpProcess(guildId, "play_stream_error");
+      });
     }
 
     return resource;
   }
 
-  private async getDirectStreamUrl(song: QueuedSong): Promise<string> {
-    logEvent('attempting_direct_stream_url', { title: song.title, url: song.url });
-    
-    // Try to get stream URL with bypass=true to get direct YouTube URL
-    const youtubeService = this.multiSourceManager.getService('youtube') as any;
-    if (youtubeService?.getStreamUrlDirect) {
-      return await youtubeService.getStreamUrlDirect(song);
-    }
-    
-    // If no direct method available, return empty (will cause fallback to fail)
-    throw new Error('Direct stream URL not available');
-  }
-
   private async createRadioResource(url: string) {
     const meta = this.sanitizeStreamMeta(url);
-    logEvent('creating_radio_resource', { ...meta });
+    logEvent("creating_radio_resource", { ...meta });
 
     // Enhanced FFmpeg arguments with aggressive buffering for streaming stability
     const ffmpegArgs = [
-      '-reconnect', '1',
-      '-reconnect_streamed', '1', 
-      '-reconnect_delay_max', '5',
-      '-rw_timeout', '30000000', // 30 second timeout (30M microseconds)
-      '-analyzeduration', '2M',
-      '-probesize', '5M',
-      '-f', 'mp3',
-      '-i', url,
-      '-bufsize', '2M', // 2MB buffer
-      '-flush_packets', '0', // Don't flush packets immediately
-      '-max_delay', '5000000', // 5 second max delay
-      '-f', 's16le',
-      '-ar', '48000',
-      '-ac', '2',
-      'pipe:1'
+      "-reconnect",
+      "1",
+      "-reconnect_streamed",
+      "1",
+      "-reconnect_delay_max",
+      "5",
+      "-rw_timeout",
+      "30000000", // 30 second timeout (30M microseconds)
+      "-analyzeduration",
+      "2M",
+      "-probesize",
+      "5M",
+      "-f",
+      "mp3",
+      "-i",
+      url,
+      "-bufsize",
+      "2M", // 2MB buffer
+      "-flush_packets",
+      "0", // Don't flush packets immediately
+      "-max_delay",
+      "5000000", // 5 second max delay
+      "-f",
+      "s16le",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "pipe:1",
     ];
 
-    const sanitizedArgs = ffmpegArgs.map(arg => {
-      if (typeof arg === 'string' && (arg.startsWith('http://') || arg.startsWith('https://'))) {
-        return '[REDACTED_URL]';
+    const sanitizedArgs = ffmpegArgs.map((arg) => {
+      if (
+        typeof arg === "string" &&
+        (arg.startsWith("http://") || arg.startsWith("https://"))
+      ) {
+        return "[REDACTED_URL]";
       }
       return arg;
     });
-    logEvent('ffmpeg_command', {
-      command: 'ffmpeg',
+    logEvent("ffmpeg_command", {
+      command: "ffmpeg",
       args: sanitizedArgs,
-      ...meta
+      ...meta,
     });
 
-    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-      stdio: ['ignore', 'pipe', 'ignore']
+    const ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
+      stdio: ["ignore", "pipe", "ignore"],
     });
 
     // Helper to safely terminate FFmpeg
@@ -1132,42 +1232,56 @@ export class MusicManager {
     const killFfmpeg = (reason: string) => {
       if (ffmpegExited) return;
       try {
-        ffmpegProcess.kill('SIGKILL');
-        logEvent('radio_ffmpeg_killed', { reason, ...meta });
-      } catch { /* ignore */ }
+        ffmpegProcess.kill("SIGKILL");
+        logEvent("radio_ffmpeg_killed", { reason, ...meta });
+      } catch {
+        /* ignore */
+      }
     };
 
-    ffmpegProcess.on('error', (error: Error) => {
-      logError('FFmpeg process error', error, { pid: ffmpegProcess.pid, ...meta });
+    ffmpegProcess.on("error", (error: Error) => {
+      logError("FFmpeg process error", error, {
+        pid: ffmpegProcess.pid,
+        ...meta,
+      });
     });
 
-    ffmpegProcess.on('exit', (code: number | null) => {
+    ffmpegProcess.on("exit", (code: number | null) => {
       ffmpegExited = true;
-      logEvent('ffmpeg_process_exit', { exitCode: code, ...meta });
+      logEvent("ffmpeg_process_exit", { exitCode: code, ...meta });
     });
 
     if (!ffmpegProcess.stdout) {
-      throw new Error('Failed to create ffmpeg process stdout');
+      throw new Error("Failed to create ffmpeg process stdout");
     }
 
-    logEvent('ffmpeg_process_created', { pid: ffmpegProcess.pid, ...meta });
+    logEvent("ffmpeg_process_created", { pid: ffmpegProcess.pid, ...meta });
 
     // Create audio resource from ffmpeg output with increased buffer
     const resource = createAudioResource(ffmpegProcess.stdout, {
       inputType: StreamType.Raw,
       inlineVolume: true,
       metadata: {
-        title: 'Stream'
-      }
+        title: "Stream",
+      },
     });
 
-    logEvent('audio_resource_created', { type: 'pcm_stream', ...meta });
+    logEvent("audio_resource_created", { type: "pcm_stream", ...meta });
 
     // Ensure FFmpeg is terminated if the player/stream finishes or is stopped
-    if (resource.playStream && typeof (resource.playStream as any).once === 'function') {
-      (resource.playStream as any).once('close', () => killFfmpeg('radio_play_stream_closed'));
-      (resource.playStream as any).once('end', () => killFfmpeg('radio_play_stream_ended'));
-      (resource.playStream as any).once('error', () => killFfmpeg('radio_play_stream_error'));
+    if (
+      resource.playStream &&
+      typeof (resource.playStream as any).once === "function"
+    ) {
+      (resource.playStream as any).once("close", () =>
+        killFfmpeg("radio_play_stream_closed"),
+      );
+      (resource.playStream as any).once("end", () =>
+        killFfmpeg("radio_play_stream_ended"),
+      );
+      (resource.playStream as any).once("error", () =>
+        killFfmpeg("radio_play_stream_error"),
+      );
     }
 
     return resource;
@@ -1178,82 +1292,60 @@ export class MusicManager {
     const now = Date.now();
     for (const [key, cache] of this.streamCache.entries()) {
       const ttlExpired = now - cache.timestamp > this.streamCacheTTL;
-      const urlExpired = typeof cache.expiresAt === 'number' ? now > cache.expiresAt : false;
+      const urlExpired =
+        typeof cache.expiresAt === "number" ? now > cache.expiresAt : false;
       if (ttlExpired || urlExpired) {
         this.streamCache.delete(key);
-        logEvent('stream_cache_expired', { url: key, reason: urlExpired ? 'url_expired' : 'ttl' });
+        logEvent("stream_cache_expired", {
+          url: key,
+          reason: urlExpired ? "url_expired" : "ttl",
+        });
       }
     }
-  }
-
-  private getCachedStreamUrl(songUrl: string): string | null {
-    const cache = this.streamCache.get(songUrl);
-    if (cache) {
-      const ttlOk = Date.now() - cache.timestamp < this.streamCacheTTL;
-      const notNearExpire = typeof cache.expiresAt === 'number' ? (cache.expiresAt - Date.now() >= 60 * 1000) : true; // at least 60s left
-      if (ttlOk && notNearExpire) {
-        logEvent('stream_cache_hit', { url: songUrl });
-        return cache.url;
-      }
-      logEvent('stream_cache_stale', { url: songUrl, reason: ttlOk ? 'near_expire' : 'ttl' });
-    }
-    return null;
   }
 
   private setCachedStreamUrl(songUrl: string, streamUrl: string): void {
     const meta = this.sanitizeStreamMeta(streamUrl);
     const entry: { url: string; timestamp: number; expiresAt?: number } = {
       url: streamUrl,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
-    if (typeof meta.expire === 'number' && Number.isFinite(meta.expire)) {
+    if (typeof meta.expire === "number" && Number.isFinite(meta.expire)) {
       try {
         const asMs = meta.expire > 1e12 ? meta.expire : meta.expire * 1000; // seconds → ms when needed
         entry.expiresAt = asMs;
-      } catch { /* ignore parse issues */ }
-    }
-    this.streamCache.set(songUrl, entry);
-    logEvent('stream_cache_set', { songUrl, ...meta, hasExpiresAt: !!entry.expiresAt });
-  }
-
-  // (Old disabled preload code removed and replaced by prefetchUpcoming/preloadStreamUrl)
-
-  // Enhanced getStreamUrl with caching
-  private async getStreamUrlWithCache(song: QueuedSong): Promise<string> {
-    // Check cache first
-    const cachedUrl = this.getCachedStreamUrl(song.url);
-    if (cachedUrl) {
-      return cachedUrl;
-    }
-
-    // Get from service
-    const youtubeService = this.multiSourceManager.getService('youtube') as any;
-    if (youtubeService?.getStreamUrl) {
-      const streamUrl = await youtubeService.getStreamUrl(song);
-      if (streamUrl) {
-        this.setCachedStreamUrl(song.url, streamUrl);
-        return streamUrl;
+      } catch {
+        /* ignore parse issues */
       }
     }
-
-    throw new Error('Failed to get stream URL');
+    this.streamCache.set(songUrl, entry);
+    logEvent("stream_cache_set", {
+      songUrl,
+      ...meta,
+      hasExpiresAt: !!entry.expiresAt,
+    });
   }
 
   // Redact stream URL for logs (avoid leaking query/signatures)
-  private sanitizeStreamMeta(url: string): { streamHost: string; streamPath: string; expire?: number } {
+  private sanitizeStreamMeta(url: string): {
+    streamHost: string;
+    streamPath: string;
+    expire?: number;
+  } {
     try {
       const u = new URL(url);
-      const expire = u.searchParams.get('expire');
-      const meta: { streamHost: string; streamPath: string; expire?: number } = {
-        streamHost: u.host,
-        streamPath: u.pathname
-      };
+      const expire = u.searchParams.get("expire");
+      const meta: { streamHost: string; streamPath: string; expire?: number } =
+        {
+          streamHost: u.host,
+          streamPath: u.pathname,
+        };
       if (expire && !Number.isNaN(Number(expire))) {
         meta.expire = Number(expire);
       }
       return meta;
     } catch {
-      return { streamHost: 'invalid', streamPath: '' };
+      return { streamHost: "invalid", streamPath: "" };
     }
   }
 }

@@ -1,7 +1,8 @@
+import fs from 'fs';
 import { BaseMusicService } from './BaseMusicService';
 import { MusicSource, ServiceType } from '../types/music';
 import { logEvent, logError } from '../utils/logger';
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { botConfig } from '../config';
 
 export class YouTubeService extends BaseMusicService {
@@ -16,7 +17,11 @@ export class YouTubeService extends BaseMusicService {
     }
 
     try {
-      logEvent('youtube_search_started', { query, maxResults, prefer: 'music_first' });
+      logEvent('youtube_search_started', {
+        query,
+        maxResults,
+        prefer: 'music_first',
+      });
 
       // First pass: prefer Music client via extractor-args; fallback: default clients
       const musicFirst = await this.searchWithYtDlp(query, maxResults, 'music');
@@ -58,8 +63,6 @@ export class YouTubeService extends BaseMusicService {
 
       // Add cookies if configured
       if (botConfig.ytdlpCookies) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const fs = require('fs');
         const cookiePath = botConfig.ytdlpCookies;
 
         logEvent('youtube_cookies_check', {
@@ -147,7 +150,10 @@ export class YouTubeService extends BaseMusicService {
 
       ytDlp.on('close', (code) => {
         if (code !== 0) {
-          logError('yt-dlp search failed', new Error(errorOutput), { query, exitCode: code });
+          logError('yt-dlp search failed', new Error(errorOutput), {
+            query,
+            exitCode: code,
+          });
           return resolve([]);
         }
 
@@ -259,8 +265,6 @@ export class YouTubeService extends BaseMusicService {
 
         // Add cookies if configured
         if (botConfig.ytdlpCookies) {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const fs = require('fs');
           const cookiePath = botConfig.ytdlpCookies;
 
           try {
@@ -370,9 +374,12 @@ export class YouTubeService extends BaseMusicService {
   }
 
   // Fetch basic metadata (thumbnail/creator/duration) for a YouTube video URL
-  async fetchMeta(
-    videoUrl: string,
-  ): Promise<{ title?: string; thumbnail?: string; creator?: string; duration?: number } | null> {
+  async fetchMeta(videoUrl: string): Promise<{
+    title?: string;
+    thumbnail?: string;
+    creator?: string;
+    duration?: number;
+  } | null> {
     return new Promise((resolve) => {
       let output = '';
       const args = [
@@ -391,8 +398,6 @@ export class YouTubeService extends BaseMusicService {
       // Add cookies if configured and accessible (best-effort)
       if (botConfig.ytdlpCookies) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const fs = require('fs');
           if (fs.existsSync(botConfig.ytdlpCookies)) {
             const cookieContent = fs.readFileSync(botConfig.ytdlpCookies, 'utf8');
             const tempCookiesPath = `/tmp/yt-dlp-meta-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.txt`;
@@ -431,5 +436,127 @@ export class YouTubeService extends BaseMusicService {
       });
       p.on('error', () => resolve(null));
     });
+  }
+
+  /**
+   * Spawn a yt-dlp process that downloads the audio for `source` through the
+   * configured proxy and pipes raw bytes to its stdout.
+   *
+   * The caller is responsible for consuming `proc.stdout` and killing `proc`
+   * when playback stops, skips, or errors — see MusicManager.createYouTubePipeResource.
+   *
+   * Returns the spawned ChildProcess.  The process is NOT waited on here; the
+   * caller drives the lifecycle.
+   */
+  spawnPipeStream(source: MusicSource): ChildProcess {
+    logEvent('youtube_pipe_stream_spawn', {
+      title: source.title,
+      url: source.url,
+    });
+
+    // Best-audio formats, prefer webm (opus-native) then m4a, then anything
+    const format = 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
+
+    const ytDlpArgs: string[] = [
+      '--no-playlist',
+      '--format',
+      format,
+      '--output',
+      '-', // write audio bytes to stdout
+      '--quiet', // suppress progress bar (stderr still carries errors)
+      '--no-warnings',
+      '--socket-timeout',
+      String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
+      '--user-agent',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+    ];
+
+    // Proxy: if set, all network traffic goes through WARP — this is the whole point
+    const proxy = botConfig.ytdlpProxy;
+    if (proxy) {
+      ytDlpArgs.push('--proxy', proxy);
+    } else {
+      logEvent('youtube_pipe_stream_no_proxy', {
+        title: source.title,
+        url: source.url,
+        message: 'YTDLP_PROXY not set — downloading direct (degraded, may be bot-blocked)',
+      });
+    }
+
+    // Cookies: best-effort, same pattern as getStreamUrl
+    if (botConfig.ytdlpCookies) {
+      const cookiePath = botConfig.ytdlpCookies;
+      try {
+        if (fs.existsSync(cookiePath)) {
+          const cookieContent = fs.readFileSync(cookiePath, 'utf8');
+          const tempCookiesPath = `/tmp/yt-dlp-pipe-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.txt`;
+          fs.writeFileSync(tempCookiesPath, cookieContent);
+          ytDlpArgs.push('--cookies', tempCookiesPath);
+        }
+      } catch (err) {
+        logError('youtube_pipe_stream: error setting up cookies (ignored)', err as Error, {
+          cookiePath,
+          title: source.title,
+        });
+      }
+    }
+
+    // The watch URL is always the canonical youtube.com/watch?v=... from the queue
+    ytDlpArgs.push(source.url);
+
+    logEvent('youtube_pipe_stream_command', {
+      title: source.title,
+      url: source.url,
+      hasProxy: !!proxy,
+      hasCookies: !!botConfig.ytdlpCookies,
+      format,
+    });
+
+    const proc = spawn('yt-dlp', ytDlpArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Surface yt-dlp stderr to structured logs without blocking
+    let stderrBuf = '';
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
+
+    proc.on('exit', (code, signal) => {
+      if (code !== 0 && signal !== 'SIGKILL') {
+        // Only log as error if not killed intentionally (SIGKILL = normal stop/skip)
+        if (stderrBuf.trim()) {
+          logError('youtube_pipe_stream_ytdlp_exit_nonzero', new Error(stderrBuf.trim()), {
+            title: source.title,
+            url: source.url,
+            exitCode: code,
+            signal,
+          });
+        } else {
+          logEvent('youtube_pipe_stream_ytdlp_exit', {
+            title: source.title,
+            url: source.url,
+            exitCode: code,
+            signal,
+          });
+        }
+      } else {
+        logEvent('youtube_pipe_stream_ytdlp_done', {
+          title: source.title,
+          url: source.url,
+          exitCode: code,
+          signal,
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      logError('youtube_pipe_stream_ytdlp_error', err, {
+        title: source.title,
+        url: source.url,
+      });
+    });
+
+    return proc;
   }
 }
