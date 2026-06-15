@@ -2,9 +2,19 @@
  * Shared yt-dlp helpers — single source of truth for args and spawn wrapper.
  *
  * Each call-site adds its own specific flags on top of the base args.
- * This util covers: User-Agent constant, proxy flag, socket-timeout flag.
+ * This util covers: User-Agent constant, proxy flag, socket-timeout flag,
+ * and the EJS n-sig solver flags (--js-runtimes node).
  * It intentionally does NOT include search-query, --format, -o, --get-url, etc.
  * — those are call-site specific.
+ *
+ * EJS n-sig solver (why it's here):
+ *   Since late 2025 yt-dlp moved n-param/signature resolution to the EJS
+ *   (External JavaScript) framework. Without --js-runtimes, yt-dlp logs
+ *   "Signature solving failed" even on valid URLs. The package yt-dlp-ejs
+ *   (installed in the Docker image) ships the solver script; node is the
+ *   runtime (/usr/local/bin/node already present in the Alpine image).
+ *   XDG_CACHE_HOME=/app/.cache (set in Dockerfile + entrypoint) makes the
+ *   cache dir writable for uid 1001 (musa).
  */
 import { spawn } from 'child_process';
 import { botConfig } from '../config';
@@ -24,14 +34,16 @@ export const YTDLP_USER_AGENT =
  *
  * @param opts.includeSocketTimeout - add --socket-timeout (for meta/playlist calls). Default false.
  * @param opts.includeProxy - add --proxy when configured. Default true.
+ * @param opts.includeEjs - add --js-runtimes node for EJS n-sig solving. Default true.
  */
 export function buildYtDlpBaseArgs(
   opts: {
     includeSocketTimeout?: boolean;
     includeProxy?: boolean;
+    includeEjs?: boolean;
   } = {},
 ): string[] {
-  const { includeSocketTimeout = false, includeProxy = true } = opts;
+  const { includeSocketTimeout = false, includeProxy = true, includeEjs = true } = opts;
 
   const args: string[] = ['--user-agent', YTDLP_USER_AGENT];
 
@@ -41,6 +53,12 @@ export function buildYtDlpBaseArgs(
 
   if (includeSocketTimeout) {
     args.push('--socket-timeout', String(botConfig.ytdlpSocketTimeoutSeconds ?? 20));
+  }
+
+  // EJS n-sig solver: use node as the JS runtime for signature/n-challenge resolution.
+  // Requires yt-dlp-ejs package (installed in Dockerfile) and XDG_CACHE_HOME writable.
+  if (includeEjs) {
+    args.push('--js-runtimes', 'node');
   }
 
   return args;

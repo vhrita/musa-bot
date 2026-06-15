@@ -21,18 +21,16 @@ export class YouTubeService extends BaseMusicService {
       logEvent('youtube_search_started', {
         query,
         maxResults,
-        prefer: 'music_first',
+        playerClient: 'web,tv',
       });
 
-      // First pass: prefer Music client via extractor-args; fallback: default clients
-      const musicFirst = await this.searchWithYtDlp(query, maxResults, 'music');
-      const results =
-        musicFirst.length > 0 ? musicFirst : await this.searchWithYtDlp(query, maxResults, 'default');
+      // Single pass with web,tv client — avoids ios/mweb (GVS PoToken) and uses
+      // the EJS n-sig solver (yt-dlp-ejs + --js-runtimes node).
+      const results = await this.searchWithYtDlp(query, maxResults);
 
       logEvent('youtube_search_completed', {
         query,
         resultsCount: results.length,
-        used: musicFirst.length > 0 ? 'music_client' : 'default',
       });
 
       return results;
@@ -45,11 +43,7 @@ export class YouTubeService extends BaseMusicService {
     }
   }
 
-  private async searchWithYtDlp(
-    query: string,
-    maxResults: number,
-    engine: 'music' | 'default' = 'music',
-  ): Promise<MusicSource[]> {
+  private async searchWithYtDlp(query: string, maxResults: number): Promise<MusicSource[]> {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
 
@@ -61,12 +55,12 @@ export class YouTubeService extends BaseMusicService {
         ...buildYtDlpBaseArgs({ includeProxy: true }),
       ];
 
-      // Prefer Music client first; fallback uses default
-      if (engine === 'music') {
-        ytDlpArgs.push('--extractor-args', 'youtube:player_client=web_music,web');
-      } else {
-        ytDlpArgs.push('--extractor-args', 'youtube:player_client=default');
-      }
+      // player_client=web,tv: evita ios/mweb (que exigem GVS PoToken) e usa
+      // clients que o EJS n-sig solver suporta. 'tv' como fallback interno do
+      // yt-dlp contorna o bug "0 sig function possibilities" presente em web puro.
+      // web_music foi removido pois exige resolução EJS adicional e não trouxe
+      // ganho real; web,tv cobre search e resolve opus sem GVS PoToken.
+      ytDlpArgs.push('--extractor-args', 'youtube:player_client=web,tv');
 
       // Add the search query
       ytDlpArgs.push(searchQuery);
@@ -75,7 +69,7 @@ export class YouTubeService extends BaseMusicService {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
         query,
-        engine,
+        playerClient: 'web,tv',
         hasProxy: !!botConfig.ytdlpProxy,
       });
 
@@ -170,13 +164,17 @@ export class YouTubeService extends BaseMusicService {
         let output = '';
         let errorOutput = '';
 
-        // Use yt-dlp to get the actual stream URL — UA + proxy from shared util
+        // Use yt-dlp to get the actual stream URL — UA + proxy + EJS from shared util.
+        // player_client=web,tv: avoids ios/mweb (requires GVS PoToken); EJS solver
+        // handles the n-sig for web,tv without any additional PoToken provider.
         const ytDlpArgs = [
           '--get-url',
           '--format',
           'bestaudio[ext=m4a]/bestaudio/best',
           '--no-playlist',
           ...buildYtDlpBaseArgs({ includeProxy: true }),
+          '--extractor-args',
+          'youtube:player_client=web,tv',
           source.url,
         ];
 
@@ -245,13 +243,16 @@ export class YouTubeService extends BaseMusicService {
   } | null> {
     return new Promise((resolve) => {
       let output = '';
-      // UA + proxy + socket-timeout from shared util; URL appended last
+      // UA + proxy + socket-timeout + EJS from shared util; URL appended last.
+      // player_client=web,tv: same as search/stream — avoids GVS PoToken clients.
       const args = [
         '--dump-json',
         '--no-warnings',
         '--skip-download',
         '--geo-bypass',
         ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
+        '--extractor-args',
+        'youtube:player_client=web,tv',
         videoUrl,
       ];
 
@@ -301,7 +302,9 @@ export class YouTubeService extends BaseMusicService {
     //   4. anything else (worst case)
     const format = 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio';
 
-    // UA + socket-timeout + proxy (WARP) from shared util
+    // UA + socket-timeout + proxy (WARP) + EJS n-sig solver from shared util.
+    // player_client=web,tv: avoids ios/mweb (requires GVS PoToken); the EJS solver
+    // (yt-dlp-ejs package + --js-runtimes node) handles n-sig for web,tv.
     const ytDlpArgs: string[] = [
       '--no-playlist',
       '--format',
@@ -315,6 +318,8 @@ export class YouTubeService extends BaseMusicService {
       '--fragment-retries',
       '10', // retry individual fragments before giving up the track
       ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
+      '--extractor-args',
+      'youtube:player_client=web,tv',
     ];
 
     if (!botConfig.ytdlpProxy) {
