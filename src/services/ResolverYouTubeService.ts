@@ -509,12 +509,6 @@ export class ResolverYouTubeService extends BaseMusicService {
     });
   }
 
-  validateUrl(url: string): boolean {
-    // Basic YouTube URL validation
-    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
-    return youtubeRegex.test(url);
-  }
-
   // Health check method
   async isResolverHealthy(): Promise<boolean> {
     try {

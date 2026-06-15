@@ -374,12 +374,6 @@ export class YouTubeService extends BaseMusicService {
     }
   }
 
-  validateUrl(url: string): boolean {
-    // Basic YouTube URL validation
-    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
-    return youtubeRegex.test(url);
-  }
-
   // Fetch basic metadata (thumbnail/creator/duration) for a YouTube video URL
   async fetchMeta(videoUrl: string): Promise<{
     title?: string;

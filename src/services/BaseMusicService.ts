@@ -12,7 +12,7 @@ export abstract class BaseMusicService {
   }
 
   abstract search(query: string, maxResults?: number): Promise<MusicSource[]>;
-  
+
   isEnabled(): boolean {
     return this.enabled;
   }
@@ -55,19 +55,7 @@ export abstract class BaseMusicService {
     return source;
   }
 
-  protected validateUrl(url: string): boolean {
-    try {
-      new URL(url);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   protected cleanTitle(title: string): string {
-    return title
-      .replace(/[[\]]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return title.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
   }
 }
