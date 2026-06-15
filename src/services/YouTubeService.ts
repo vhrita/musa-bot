@@ -125,6 +125,12 @@ export class YouTubeService extends BaseMusicService {
         ytDlpArgs.push('--extractor-args', 'youtube:player_client=default');
       }
 
+      // Add proxy if configured — search must go through WARP just like stream/pipe
+      const searchProxy = botConfig.ytdlpProxy;
+      if (searchProxy) {
+        ytDlpArgs.push('--proxy', searchProxy);
+      }
+
       // Add the search query
       ytDlpArgs.push(searchQuery);
 
@@ -133,6 +139,7 @@ export class YouTubeService extends BaseMusicService {
         args: ytDlpArgs.join(' '),
         query,
         engine,
+        hasProxy: !!searchProxy,
       });
 
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
