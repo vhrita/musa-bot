@@ -31,6 +31,8 @@ FROM node:22-alpine3.20 AS production
 
 # yt-dlp version to bake — override at build time with --build-arg YTDLP_VERSION=...
 ARG YTDLP_VERSION=2026.06.09
+# EJS n-sig solver — override with --build-arg YTDLP_EJS_VERSION=...
+ARG YTDLP_EJS_VERSION=0.8.0
 
 # Runtime deps:
 #   ffmpeg        — audio transcoding
@@ -39,10 +41,13 @@ ARG YTDLP_VERSION=2026.06.09
 #   libstdc++     — required at runtime by @discordjs/opus compiled from source (musl build)
 RUN apk add --no-cache ffmpeg python3 py3-pip su-exec libstdc++
 
-# Install yt-dlp via pip (supports both linux/amd64 and linux/arm64 transparently).
+# Install yt-dlp + EJS n-sig solver via pip (supports both linux/amd64 and linux/arm64 transparently).
 # --break-system-packages is required on Alpine ≥3.20 (PEP-668 enforced).
-# Pinned to YTDLP_VERSION for reproducibility; bump the ARG above to update.
-RUN pip install --no-cache-dir --break-system-packages "yt-dlp==${YTDLP_VERSION}"
+# yt-dlp-ejs ships the JavaScript challenge-solver script used by the EJS framework;
+# node (/usr/local/bin/node) is the JS runtime — no deno required.
+RUN pip install --no-cache-dir --break-system-packages \
+    "yt-dlp==${YTDLP_VERSION}" \
+    "yt-dlp-ejs==${YTDLP_EJS_VERSION}"
 
 WORKDIR /app
 COPY package*.json ./
@@ -54,6 +59,11 @@ COPY --from=builder /app/dist ./dist
 COPY musa.png ./
 
 RUN mkdir -p /app/logs
+
+# Cache dir writable pelo uid 1001 (musa) — o EJS solver e o yt-dlp usam XDG_CACHE_HOME.
+# Sem isso o yt-dlp-ejs falha silenciosamente ao tentar cachear o script.
+RUN mkdir -p /app/.cache
+ENV XDG_CACHE_HOME=/app/.cache
 
 RUN addgroup -g 1001 -S nodejs && adduser -S musa -u 1001
 

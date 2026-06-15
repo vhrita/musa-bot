@@ -42,7 +42,8 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
     while (yielded < limit) {
       const remaining = limit === Infinity ? pageSize : Math.min(pageSize, limit - yielded);
       const end = start + remaining - 1;
-      // UA + proxy + socket-timeout from shared util; URL appended last
+      // UA + proxy + socket-timeout + EJS from shared util; URL appended last.
+      // player_client=web,tv: avoids ios/mweb (GVS PoToken) for playlist fetches.
       const args: string[] = [
         '--dump-json',
         '--flat-playlist',
@@ -50,6 +51,8 @@ export class YouTubePlaylistProvider implements PlaylistProvider {
         '--geo-bypass',
         '--ignore-errors',
         ...buildYtDlpBaseArgs({ includeSocketTimeout: true, includeProxy: true }),
+        '--extractor-args',
+        'youtube:player_client=web,tv',
         '--playlist-start',
         String(start),
         '--playlist-end',
