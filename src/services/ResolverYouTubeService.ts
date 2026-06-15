@@ -185,12 +185,19 @@ export class ResolverYouTubeService extends BaseMusicService {
             ytDlpArgs.splice(-1, 0, '--extractor-args', 'youtube:player_client=default');
           }
 
+          // Add proxy if configured — direct fallback must route through WARP too
+          const searchProxy = botConfig.ytdlpProxy;
+          if (searchProxy) {
+            ytDlpArgs.splice(-1, 0, '--proxy', searchProxy);
+          }
+
           logEvent('resolver_youtube_ytdlp_command', {
             command: 'yt-dlp',
             args: ytDlpArgs.join(' '),
             query,
             method: 'direct_ytdlp',
             engine,
+            hasProxy: !!searchProxy,
           });
 
           const ytDlp = spawn('yt-dlp', ytDlpArgs);
@@ -428,11 +435,18 @@ export class ResolverYouTubeService extends BaseMusicService {
         logEvent('resolver_ytdlp_stream_no_cookies', { url });
       }
 
+      // Add proxy if configured — direct fallback must route through WARP too
+      const streamProxy = botConfig.ytdlpProxy;
+      if (streamProxy) {
+        ytDlpArgs.splice(-1, 0, '--proxy', streamProxy);
+      }
+
       logEvent('resolver_youtube_ytdlp_stream_command', {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
         url,
         method: 'direct_ytdlp',
+        hasProxy: !!streamProxy,
       });
 
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
