@@ -20,69 +20,77 @@ export class YouTubeService extends BaseMusicService {
 
       // First pass: prefer Music client via extractor-args; fallback: default clients
       const musicFirst = await this.searchWithYtDlp(query, maxResults, 'music');
-      const results = musicFirst.length > 0
-        ? musicFirst
-        : await this.searchWithYtDlp(query, maxResults, 'default');
+      const results =
+        musicFirst.length > 0 ? musicFirst : await this.searchWithYtDlp(query, maxResults, 'default');
 
-      logEvent('youtube_search_completed', { query, resultsCount: results.length, used: musicFirst.length > 0 ? 'music_client' : 'default' });
+      logEvent('youtube_search_completed', {
+        query,
+        resultsCount: results.length,
+        used: musicFirst.length > 0 ? 'music_client' : 'default',
+      });
 
       return results;
-
     } catch (error) {
       logError('YouTube search failed', error as Error, {
         query,
-        maxResults
+        maxResults,
       });
       return [];
     }
   }
 
-  private async searchWithYtDlp(query: string, maxResults: number, engine: 'music' | 'default' = 'music'): Promise<MusicSource[]> {
+  private async searchWithYtDlp(
+    query: string,
+    maxResults: number,
+    engine: 'music' | 'default' = 'music',
+  ): Promise<MusicSource[]> {
     return new Promise((resolve) => {
       const searchQuery = `ytsearch${maxResults}:${query}`;
-      
-              // Use yt-dlp to search for videos
-        const ytDlpArgs = [
-          '--dump-json',
-          '--no-warnings',
-          '--skip-download',
-          '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
-        ];
+
+      // Use yt-dlp to search for videos
+      const ytDlpArgs = [
+        '--dump-json',
+        '--no-warnings',
+        '--skip-download',
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+      ];
 
       // Add cookies if configured
       if (botConfig.ytdlpCookies) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const fs = require('fs');
         const cookiePath = botConfig.ytdlpCookies;
-        
+
         logEvent('youtube_cookies_check', {
           cookiePath,
-          query
+          query,
         });
 
         try {
           if (fs.existsSync(cookiePath)) {
             const stats = fs.statSync(cookiePath);
             const cookieContent = fs.readFileSync(cookiePath, 'utf8');
-            const cookieLines = cookieContent.split('\n').filter((line: string) => 
-              line.trim() && !line.startsWith('#')
-            ).length;
+            const cookieLines = cookieContent
+              .split('\n')
+              .filter((line: string) => line.trim() && !line.startsWith('#')).length;
 
             logEvent('youtube_cookies_loaded', {
               cookiePath,
               fileSize: stats.size,
               cookieLines,
               lastModified: stats.mtime,
-              query
+              query,
             });
 
             // Create a temporary copy of cookies to avoid permission issues
             const tempCookiesPath = `/tmp/yt-dlp-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
             fs.writeFileSync(tempCookiesPath, cookieContent);
-            
+
             logEvent('youtube_temp_cookies_created', {
               originalPath: cookiePath,
               tempPath: tempCookiesPath,
-              query
+              query,
             });
 
             ytDlpArgs.push('--cookies', tempCookiesPath);
@@ -91,19 +99,19 @@ export class YouTubeService extends BaseMusicService {
           } else {
             logError('YouTube cookies file not found', new Error(`File not found: ${cookiePath}`), {
               cookiePath,
-              query
+              query,
             });
           }
         } catch (error) {
           logError('Error reading YouTube cookies file', error as Error, {
             cookiePath,
-            query
+            query,
           });
         }
       } else {
         logEvent('youtube_cookies_not_configured', {
           query,
-          message: 'YTDLP_COOKIES environment variable not set'
+          message: 'YTDLP_COOKIES environment variable not set',
         });
       }
 
@@ -116,14 +124,14 @@ export class YouTubeService extends BaseMusicService {
 
       // Add the search query
       ytDlpArgs.push(searchQuery);
-      
+
       logEvent('youtube_ytdlp_command', {
         command: 'yt-dlp',
         args: ytDlpArgs.join(' '),
         query,
-        engine
+        engine,
       });
-      
+
       const ytDlp = spawn('yt-dlp', ytDlpArgs);
 
       let output = '';
@@ -145,14 +153,21 @@ export class YouTubeService extends BaseMusicService {
 
         try {
           const results: MusicSource[] = [];
-          const lines = output.trim().split('\n').filter(line => line.trim());
+          const lines = output
+            .trim()
+            .split('\n')
+            .filter((line) => line.trim());
 
           // Helper: only accept direct YouTube video URLs (not channels/playlists)
           const isVideoUrl = (u: string): boolean => {
             try {
               const url = new URL(u);
               const host = url.hostname.toLowerCase();
-              const isYt = host === 'youtu.be' || host === 'www.youtube.com' || host === 'youtube.com' || host.endsWith('.youtube.com');
+              const isYt =
+                host === 'youtu.be' ||
+                host === 'www.youtube.com' ||
+                host === 'youtube.com' ||
+                host.endsWith('.youtube.com');
               if (!isYt) return false;
               if (host === 'youtu.be') {
                 const id = url.pathname.replace(/^\//, '');
@@ -173,12 +188,13 @@ export class YouTubeService extends BaseMusicService {
           for (const line of lines) {
             try {
               const video = JSON.parse(line);
-              
+
               // Skip if this is not a video entry or missing required fields
               if (!video.id || !video.title) {
                 continue;
               }
-              const candidateUrl = (video.webpage_url as string) || `https://www.youtube.com/watch?v=${video.id}`;
+              const candidateUrl =
+                (video.webpage_url as string) || `https://www.youtube.com/watch?v=${video.id}`;
               // Filter out channels/playlists by URL pattern and video id length
               if (!isVideoUrl(candidateUrl)) {
                 continue;
@@ -190,7 +206,7 @@ export class YouTubeService extends BaseMusicService {
                 duration: video.duration || undefined,
                 creator: video.uploader || video.channel || undefined,
                 service: 'youtube' as ServiceType,
-                thumbnail: video.thumbnail || undefined
+                thumbnail: video.thumbnail || undefined,
               });
             } catch (parseError) {
               // Skip malformed JSON lines
@@ -200,14 +216,14 @@ export class YouTubeService extends BaseMusicService {
 
           logEvent('youtube_search_parsed', {
             query,
-            foundVideos: results.length
+            foundVideos: results.length,
           });
 
           resolve(results);
         } catch (error) {
           logError('Failed to parse yt-dlp output', error as Error, {
             query,
-            output: output.substring(0, 500)
+            output: output.substring(0, 500),
           });
           resolve([]);
         }
@@ -224,7 +240,7 @@ export class YouTubeService extends BaseMusicService {
     try {
       logEvent('youtube_stream_url_requested', {
         title: source.title,
-        url: source.url
+        url: source.url,
       });
 
       return new Promise<string | null>((resolve) => {
@@ -234,47 +250,50 @@ export class YouTubeService extends BaseMusicService {
         // Use yt-dlp to get the actual stream URL
         const ytDlpArgs = [
           '--get-url',
-          '--format', 'bestaudio[ext=m4a]/bestaudio/best',
+          '--format',
+          'bestaudio[ext=m4a]/bestaudio/best',
           '--no-playlist',
-          '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
+          '--user-agent',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
         ];
 
         // Add cookies if configured
         if (botConfig.ytdlpCookies) {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
           const fs = require('fs');
           const cookiePath = botConfig.ytdlpCookies;
-          
+
           try {
             if (fs.existsSync(cookiePath)) {
               // Create a temporary copy of cookies to avoid permission issues
               const cookieContent = fs.readFileSync(cookiePath, 'utf8');
               const tempCookiesPath = `/tmp/yt-dlp-stream-cookies-${Date.now()}-${Math.random().toString(36).substring(2, 11)}.txt`;
               fs.writeFileSync(tempCookiesPath, cookieContent);
-              
+
               ytDlpArgs.push('--cookies', tempCookiesPath);
-              
+
               // Add additional flags for better YouTube compatibility
               ytDlpArgs.push('--extractor-args', 'youtube:player_client=android,web');
               ytDlpArgs.push('--no-check-certificate');
-              
+
               logEvent('youtube_stream_cookies_used', {
                 originalPath: cookiePath,
                 tempPath: tempCookiesPath,
                 title: source.title,
-                url: source.url
+                url: source.url,
               });
             } else {
               logEvent('youtube_stream_cookies_missing', {
                 cookiePath,
                 title: source.title,
-                url: source.url
+                url: source.url,
               });
             }
           } catch (error) {
             logError('Error checking cookies for stream URL', error as Error, {
               cookiePath,
               title: source.title,
-              url: source.url
+              url: source.url,
             });
           }
         }
@@ -303,7 +322,7 @@ export class YouTubeService extends BaseMusicService {
             logError('Failed to get YouTube stream URL', new Error(errorOutput), {
               title: source.title,
               url: source.url,
-              exitCode: code
+              exitCode: code,
             });
             resolve(null);
             return;
@@ -314,14 +333,14 @@ export class YouTubeService extends BaseMusicService {
             logEvent('youtube_stream_url_extracted', {
               title: source.title,
               originalUrl: source.url,
-              streamUrl: streamUrl.substring(0, 100) + '...' // Log only first 100 chars for security
+              streamUrl: streamUrl.substring(0, 100) + '...', // Log only first 100 chars for security
             });
             resolve(streamUrl);
           } else {
             logError('Invalid YouTube stream URL', new Error('No valid URL found'), {
               title: source.title,
               url: source.url,
-              output: output.substring(0, 200)
+              output: output.substring(0, 200),
             });
             resolve(null);
           }
@@ -330,16 +349,15 @@ export class YouTubeService extends BaseMusicService {
         ytDlp.on('error', (error) => {
           logError('yt-dlp process error during stream URL extraction', error, {
             title: source.title,
-            url: source.url
+            url: source.url,
           });
           resolve(null);
         });
       });
-
     } catch (error) {
       logError('Failed to get YouTube stream URL', error as Error, {
         title: source.title,
-        url: source.url
+        url: source.url,
       });
       return null;
     }
@@ -352,24 +370,28 @@ export class YouTubeService extends BaseMusicService {
   }
 
   // Fetch basic metadata (thumbnail/creator/duration) for a YouTube video URL
-  async fetchMeta(videoUrl: string): Promise<{ title?: string; thumbnail?: string; creator?: string; duration?: number } | null> {
+  async fetchMeta(
+    videoUrl: string,
+  ): Promise<{ title?: string; thumbnail?: string; creator?: string; duration?: number } | null> {
     return new Promise((resolve) => {
       let output = '';
-      let errorOutput = '';
       const args = [
         '--dump-json',
         '--no-warnings',
         '--skip-download',
         '--no-check-certificate',
         '--geo-bypass',
-        '--socket-timeout', String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        '--socket-timeout',
+        String(botConfig.ytdlpSocketTimeoutSeconds ?? 20),
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
         videoUrl,
       ];
 
       // Add cookies if configured and accessible (best-effort)
       if (botConfig.ytdlpCookies) {
         try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
           const fs = require('fs');
           if (fs.existsSync(botConfig.ytdlpCookies)) {
             const cookieContent = fs.readFileSync(botConfig.ytdlpCookies, 'utf8');
@@ -377,7 +399,9 @@ export class YouTubeService extends BaseMusicService {
             fs.writeFileSync(tempCookiesPath, cookieContent);
             args.splice(-1, 0, '--cookies', tempCookiesPath);
           }
-        } catch { /* ignore cookie problems */ }
+        } catch {
+          /* ignore cookie problems */
+        }
       }
 
       // Optional proxy support if configured
@@ -387,8 +411,9 @@ export class YouTubeService extends BaseMusicService {
       }
 
       const p = spawn('yt-dlp', args);
-      p.stdout.on('data', (d) => { output += d.toString(); });
-      p.stderr.on('data', (d) => { errorOutput += d.toString(); });
+      p.stdout.on('data', (d) => {
+        output += d.toString();
+      });
       p.on('close', () => {
         try {
           const line = output.trim().split('\n')[0] || '';
