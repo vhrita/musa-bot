@@ -58,7 +58,7 @@ COPY --from=builder /app/dist ./dist
 # Fallback asset used in embeds
 COPY musa.png ./
 
-RUN mkdir -p /app/logs
+RUN mkdir -p /app/logs /app/data
 
 # Cache dir writable pelo uid 1001 (musa) — o EJS solver e o yt-dlp usam XDG_CACHE_HOME.
 # Sem isso o yt-dlp-ejs falha silenciosamente ao tentar cachear o script.
