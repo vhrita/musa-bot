@@ -632,6 +632,79 @@ export class MusicManager {
     logEvent('song_skipped', { guildId, by: by ?? 'unknown' });
   }
 
+  /**
+   * P2 — Toca uma estação de rádio IMEDIATAMENTE, respeitando as regras do MELHORIAS.md:
+   *
+   *  - Rádio toca APENAS UMA estação.
+   *  - Sobrescreve a posição atual: a música em reprodução vai pra recentlyPlayed.
+   *  - NÃO limpa a fila de próximas músicas.
+   *  - A estação de rádio NUNCA entra na lista de próximas (sai do ar naturalmente).
+   *  - loopMode é forçado pra 'off' enquanto o rádio está ativo (evita re-enfileirar
+   *    um live stream sem fim).
+   *
+   * Implementação:
+   *  (a) Mata o processo yt-dlp ativo (se houver).
+   *  (b) Move currentSong → recentlyPlayed.
+   *  (c) Seta currentSong = station, isPlaying = true.
+   *  (d) Força loopMode = 'off' para esse guild.
+   *  (e) Chama playAudio() diretamente — sem queue.shift().
+   *  (f) Quando o stream de rádio termina/falha (AudioPlayerStatus.Idle),
+   *      playNext() retoma a fila normal (próximas músicas não foram tocadas).
+   */
+  async playRadioNow(guildId: string, station: QueuedSong): Promise<void> {
+    const connection = this.voiceConnections.get(guildId);
+    if (!connection) {
+      throw new Error('Sem conexão de voz para iniciar o rádio.');
+    }
+
+    const guildData = this.getGuildData(guildId);
+
+    logEvent('radio_play_now_requested', {
+      guildId,
+      stationTitle: station.title,
+      stationUrl: station.url,
+      previousSong: guildData.currentSong?.title ?? null,
+    });
+
+    // (a) Mata qualquer yt-dlp pipe ativo (radio usa ffmpeg, mas mantém consistência)
+    this.killActiveYtdlpProcess(guildId, 'radio_override');
+
+    // (b) Move a música atual para recentlyPlayed
+    if (guildData.currentSong) {
+      guildData.recentlyPlayed = guildData.recentlyPlayed || [];
+      guildData.recentlyPlayed.unshift(guildData.currentSong);
+      if (guildData.recentlyPlayed.length > 6) {
+        guildData.recentlyPlayed = guildData.recentlyPlayed.slice(0, 6);
+      }
+      this.activeStreams.delete(guildData.currentSong.url);
+    }
+
+    // (c) Seta a estação como currentSong
+    guildData.currentSong = station;
+    guildData.isPlaying = false; // será setado pra true pelo evento Playing
+    guildData.isPaused = false;
+
+    // (d) Força loopMode off: live streams não têm fim — loop recriaria erro
+    const previousLoopMode = guildData.loopMode;
+    if (guildData.loopMode !== 'off') {
+      guildData.loopMode = 'off';
+      logEvent('radio_loop_mode_overridden', {
+        guildId,
+        previousLoopMode,
+        reason: 'radio_play_now',
+      });
+    }
+
+    // (e) Cancela inactivity timer se estava correndo
+    this.cancelInactivityTimer(guildId);
+
+    // Bump version e status antes de começar (mostra "rádio carregando")
+    this.bumpAndPushStatus(guildId);
+
+    // (f) Toca diretamente via playAudio (que usa createRadioResource sem -f mp3)
+    await this.playAudio(guildId, station);
+  }
+
   setVolume(guildId: string, volume: number): void {
     const guildData = this.getGuildData(guildId);
     guildData.volume = Math.max(0, Math.min(100, volume));
@@ -1107,7 +1180,10 @@ export class MusicManager {
     const meta = this.sanitizeStreamMeta(url);
     logEvent('creating_radio_resource', { ...meta });
 
-    // Enhanced FFmpeg arguments with aggressive buffering for streaming stability
+    // Enhanced FFmpeg arguments with aggressive buffering for streaming stability.
+    // NOTE: Do NOT force '-f mp3' on input — let ffmpeg auto-detect the container.
+    // Radio Browser stations may use AAC, OGG/Vorbis, HLS (.m3u8) etc.
+    // ffmpeg handles all of these natively via -analyzeduration/-probesize.
     const ffmpegArgs = [
       '-reconnect',
       '1',
@@ -1121,8 +1197,6 @@ export class MusicManager {
       '2M',
       '-probesize',
       '5M',
-      '-f',
-      'mp3',
       '-i',
       url,
       '-bufsize',

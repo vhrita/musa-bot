@@ -80,6 +80,10 @@ const EnvSchema = z.object({
   SPOTIFY_TIMEOUT_SECONDS: intInRange(1, 120, 12).optional().default(12),
   SPOTIFY_MARKET: z.string().optional().default('US'),
 
+  // Radio Browser API settings (https://api.radio-browser.info — grátis, sem key)
+  RADIO_BROWSER_TIMEOUT_SECONDS: intInRange(1, 60, 8).optional().default(8),
+  RADIO_BROWSER_MAX_RESULTS: intInRange(1, 50, 10).optional().default(10),
+
   LOG_LEVEL: z.string().optional(),
   LOG_MAX_SIZE_MB: intInRange(1, 200, 10).optional().default(10),
   LOG_MAX_FILES: intInRange(1, 20, 3).optional().default(3),
