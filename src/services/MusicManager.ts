@@ -11,10 +11,11 @@ import {
   entersState,
   demuxProbe,
 } from '@discordjs/voice';
-import { VoiceChannel } from 'discord.js';
+import { Client, VoiceChannel } from 'discord.js';
 import { spawn, ChildProcess } from 'child_process';
 import { PresenceManager } from './PresenceManager';
-import { Announcer } from './Announcer';
+import { StatusRenderer } from './StatusRenderer';
+import { StatusSnapshot } from './statusView';
 import { GuildMusicData, QueuedSong, LoopMode } from '../types/music';
 import { MultiSourceManager } from '../services/MultiSourceManager';
 import { logEvent, logError, logWarning } from '../utils/logger';
@@ -33,8 +34,20 @@ export class MusicManager {
   // Active yt-dlp pipe processes per guild — killed on stop/skip/disconnect/error
   private readonly activeYtdlpProcesses = new Map<string, ChildProcess>();
 
+  // Cache of resolved Discord avatar URLs keyed by user id.
+  // Populated lazily when the user adds/shuffles music.
+  // The render function reads from this cache — zero I/O inside render.
+  private readonly avatarCache = new Map<string, string>();
+
+  private client: Client | null = null;
+
   constructor() {
     this.multiSourceManager = new MultiSourceManager();
+  }
+
+  /** Called once from index.ts after the Discord client is ready. */
+  setClient(client: Client): void {
+    this.client = client;
   }
 
   async joinVoiceChannel(channel: VoiceChannel): Promise<VoiceConnection | null> {
@@ -203,6 +216,9 @@ export class MusicManager {
       at: Date.now(),
       ...(requestedById ? { byId: requestedById } : {}),
     } as any;
+
+    // Pre-fetch and cache the avatar so render() has it without I/O
+    if (requestedById) this.cacheAvatar(requestedById);
 
     logEvent('song_added_to_queue', {
       guildId,
@@ -649,6 +665,8 @@ export class MusicManager {
     const ls: any = { by: by || 'alguém', at: Date.now() };
     if (byId) ls.byId = byId;
     guildData.lastShuffle = ls;
+    // Pre-fetch and cache the shuffler's avatar so render() has it without I/O
+    if (byId) this.cacheAvatar(byId);
     guildData.shuffleEnabled = true;
     logEvent('queue_shuffled', {
       guildId,
@@ -701,37 +719,84 @@ export class MusicManager {
   }
 
   /**
-   * Fire-and-forget Announcer status update for a guild.
-   * Builds an IMMUTABLE snapshot (queue is sliced, not the live reference) to
-   * prevent the render from seeing a later mutation if the Announcer awaits I/O
-   * before consuming the payload.  Also passes the current version so the
-   * Announcer can discard stale (out-of-order) async edits.
-   * Status updates are cosmetic — they must never crash the playback path.
+   * Build an immutable snapshot of the guild's current status for the renderer.
+   * Queue is sliced (not the live reference) to prevent render from seeing later
+   * mutations while the flush is async.
+   *
+   * Exposed as public so StatusRenderer can call it as its snapshotFn.
+   */
+  buildSnapshot(guildId: string): StatusSnapshot | null {
+    try {
+      const guildData = this.getGuildData(guildId);
+      const connection = this.voiceConnections.get(guildId);
+
+      // Resolve voice channel name from in-process cache (no async needed)
+      let voiceChannelName: string | undefined;
+      const voiceChannelId = connection?.joinConfig?.channelId;
+      if (voiceChannelId && this.client) {
+        try {
+          const vc = this.client.channels.cache.get(voiceChannelId);
+          if (vc && 'name' in vc) voiceChannelName = (vc as any).name as string; // eslint-disable-line @typescript-eslint/no-explicit-any
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      // Resolve cached avatar URL for footer
+      const lastAddedById = guildData.lastAdded?.byId;
+      const footerAvatarUrl = lastAddedById ? this.avatarCache.get(lastAddedById) : undefined;
+
+      const snapshot: StatusSnapshot = {
+        version: guildData.version ?? 0,
+        currentSong: guildData.currentSong,
+        queue: guildData.queue.slice(),
+        isPaused: guildData.isPaused,
+        recent: guildData.recentlyPlayed ? guildData.recentlyPlayed.slice() : [],
+        playedCount: guildData.playedCount ?? 0,
+        voiceChannelName,
+        footerAvatarUrl,
+      };
+      if (typeof guildData.currentSongStartedAt === 'number') {
+        snapshot.startedAt = guildData.currentSongStartedAt;
+      }
+      if (guildData.lastShuffle) snapshot.lastShuffle = guildData.lastShuffle;
+      if (guildData.lastAdded) snapshot.lastAdded = guildData.lastAdded;
+
+      return snapshot;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Delegate a status render cycle to StatusRenderer.
+   * StatusRenderer owns debounce / mutex / stale-guard.
+   * Status updates are cosmetic — must never crash the playback path.
    */
   private pushStatus(guildId: string): void {
     try {
       const guildData = this.getGuildData(guildId);
-      const connection = this.voiceConnections.get(guildId);
-      // Take a copy of the queue at this moment — the live array may be mutated
-      // (shift/push) while the async render is still in flight.
-      const payload: any = {
-        currentSong: guildData.currentSong,
-        queue: guildData.queue.slice(), // snapshot, not live reference
-        recent: guildData.recentlyPlayed ? guildData.recentlyPlayed.slice() : [],
-        isPaused: guildData.isPaused,
-        version: guildData.version ?? 0,
-        playedCount: guildData.playedCount ?? 0,
-      };
-      const voiceChannelId = connection?.joinConfig?.channelId;
-      if (voiceChannelId) payload.voiceChannelId = voiceChannelId;
-      if (typeof guildData.currentSongStartedAt === 'number')
-        payload.startedAt = guildData.currentSongStartedAt;
-      if (guildData.lastShuffle) payload.lastShuffle = guildData.lastShuffle;
-      if (guildData.lastAdded) payload.lastAdded = guildData.lastAdded;
-      void Announcer.updateGuildStatus(guildId, payload);
+      StatusRenderer.markDirty(guildId, guildData.version ?? 0);
     } catch {
       /* ignore — cosmetic */
     }
+  }
+
+  /**
+   * Fetch and cache the avatar URL for a Discord user id.
+   * Fire-and-forget; never blocks the caller.
+   * Stored in avatarCache so buildSnapshot() can include it without any I/O.
+   */
+  private cacheAvatar(userId: string): void {
+    if (!this.client || this.avatarCache.has(userId)) return;
+    void this.client.users
+      .fetch(userId)
+      .then((u) => {
+        this.avatarCache.set(userId, u.displayAvatarURL({ size: 64 }));
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }
 
   // Schedules a prefetch pass for this guild (debounced)
