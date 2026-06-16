@@ -6,6 +6,7 @@ import { logger } from './utils/logger';
 import { MusicManager } from './services/MusicManager';
 import { PresenceManager } from './services/PresenceManager';
 import { Announcer } from './services/Announcer';
+import { StatusRenderer } from './services/StatusRenderer';
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates],
@@ -20,6 +21,9 @@ client.musicManager = musicManager;
 // Wire client to helpers that need it
 PresenceManager.setClient(client);
 Announcer.setClient(client);
+StatusRenderer.setClient(client);
+StatusRenderer.setSnapshotFn((guildId) => musicManager.buildSnapshot(guildId));
+musicManager.setClient(client);
 
 // Load commands
 const loadCommands = async () => {
