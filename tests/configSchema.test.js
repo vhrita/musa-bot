@@ -73,8 +73,28 @@ describe('config schema loader', () => {
       expect(cfg.logging.level).toBe('DEBUG');
       expect(cfg.services.youtube.enabled).toBe(false);
       expect(cfg.services.radio.enabled).toBe(true);
+      // SoundCloud defaults to enabled with priority 4
+      expect(cfg.services.soundcloud.enabled).toBe(true);
+      expect(cfg.services.soundcloud.priority).toBe(4);
       expect(cfg.music.maxQueueSize).toBeGreaterThan(0);
     });
+  });
+
+  test('ENABLE_SOUNDCLOUD can be toggled off', () => {
+    const { loadBotConfig } = reloadLoader();
+    withVars(
+      {
+        ...clearSetupEnvExcept(['DISCORD_TOKEN']),
+        DISCORD_TOKEN: 'x',
+        ENABLE_SOUNDCLOUD: 'false',
+        SOUNDCLOUD_PRIORITY: '5',
+      },
+      () => {
+        const cfg = loadBotConfig();
+        expect(cfg.services.soundcloud.enabled).toBe(false);
+        expect(cfg.services.soundcloud.priority).toBe(5);
+      },
+    );
   });
 
   test('boolean coercion and proxy alias', () => {
