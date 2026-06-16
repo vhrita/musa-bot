@@ -39,7 +39,7 @@ export interface GuildMusicData {
   playedCount?: number;
 }
 
-export type ServiceType = 'youtube' | 'internet_archive' | 'radio' | 'spotify';
+export type ServiceType = 'youtube' | 'internet_archive' | 'radio' | 'spotify' | 'soundcloud';
 
 export type LoopMode = 'off' | 'song' | 'queue';
 
@@ -63,6 +63,7 @@ export interface BotConfig {
     youtube: ServiceConfig;
     internetArchive: ServiceConfig;
     radio: ServiceConfig;
+    soundcloud: ServiceConfig;
   };
   // Optional resolver settings (external YouTube resolver)
   resolver?: {

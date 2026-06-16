@@ -4,6 +4,7 @@ import { RadioService } from './RadioService';
 import { InternetArchiveService } from './InternetArchiveService';
 import { YouTubeService } from './YouTubeService';
 import { ResolverYouTubeService } from './ResolverYouTubeService';
+import { SoundCloudService } from './SoundCloudService';
 import { botConfig } from '../config';
 import { logEvent, logError, logWarning } from '../utils/logger';
 import { isYouTubeVideoUrl } from '../utils/providers';
@@ -48,6 +49,15 @@ export class MultiSourceManager {
       });
     }
 
+    // SoundCloud — fallback when YouTube returns empty/fails (priority > YouTube)
+    services.push(
+      new SoundCloudService(botConfig.services.soundcloud.priority, botConfig.services.soundcloud.enabled),
+    );
+    logEvent('soundcloud_service_initialized', {
+      priority: botConfig.services.soundcloud.priority,
+      enabled: botConfig.services.soundcloud.enabled,
+    });
+
     this.services.push(...services);
 
     // Filter enabled services and sort by priority
@@ -78,7 +88,25 @@ export class MultiSourceManager {
       enabledServices: this.enabledServices.length,
     });
 
-    const searchPromises = this.enabledServices.map(async (service) => {
+    // Tier separation for waterfall fallback:
+    //  - FALLBACK_SERVICES: only queried when all primary music sources return empty
+    //  - PASSTHROUGH_SERVICES: fan-out alongside primaries (radio/IA unchanged behaviour)
+    //  - Everything else is "primary" (youtube / resolver-youtube)
+    const FALLBACK_SERVICES: ServiceType[] = ['soundcloud'];
+    const PASSTHROUGH_SERVICES: ServiceType[] = ['radio', 'internet_archive'];
+
+    const passthroughEnabled = this.enabledServices.filter((s) =>
+      PASSTHROUGH_SERVICES.includes(s.getServiceName()),
+    );
+    const primaryEnabled = this.enabledServices.filter(
+      (s) =>
+        !FALLBACK_SERVICES.includes(s.getServiceName()) && !PASSTHROUGH_SERVICES.includes(s.getServiceName()),
+    );
+    const fallbackEnabled = this.enabledServices.filter((s) =>
+      FALLBACK_SERVICES.includes(s.getServiceName()),
+    );
+
+    const runService = async (service: BaseMusicService): Promise<MusicSource[]> => {
       try {
         const results = await service.search(query, maxResultsPerService);
         logEvent('service_search_completed', {
@@ -94,11 +122,27 @@ export class MultiSourceManager {
         });
         return [];
       }
-    });
+    };
 
     try {
-      const allResults = await Promise.all(searchPromises);
-      const combinedResults = allResults.flat();
+      // Fan-out primaries + passthrough in parallel (existing behaviour for these tiers)
+      const [primaryResults, passthroughResults] = await Promise.all([
+        Promise.all(primaryEnabled.map(runService)).then((r) => r.flat()),
+        Promise.all(passthroughEnabled.map(runService)).then((r) => r.flat()),
+      ]);
+
+      // Waterfall: only query SoundCloud if all primary sources returned nothing
+      let fallbackResults: MusicSource[] = [];
+      if (primaryResults.length === 0 && fallbackEnabled.length > 0) {
+        logEvent('soundcloud_fallback_triggered', {
+          query,
+          reason: 'primary_sources_returned_empty',
+          fallbackServices: fallbackEnabled.map((s) => s.getServiceName()),
+        });
+        fallbackResults = (await Promise.all(fallbackEnabled.map(runService))).flat();
+      }
+
+      const combinedResults = [...primaryResults, ...fallbackResults, ...passthroughResults];
 
       // Filter out non-video YouTube entries (channels/playlists) — canonical util
       const filteredResults = combinedResults.filter((r) => {
@@ -112,6 +156,7 @@ export class MultiSourceManager {
       logEvent('multi_source_search_completed', {
         query,
         totalResults: sortedResults.length,
+        usedFallback: fallbackResults.length > 0,
         resultsByService: this.getResultsCountByService(filteredResults),
       });
 

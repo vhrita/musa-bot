@@ -53,10 +53,12 @@ const EnvSchema = z.object({
   ENABLE_INTERNET_ARCHIVE: bool().optional().default(true),
   ENABLE_RADIO: bool().optional().default(true),
   ENABLE_SPOTIFY: bool().optional().default(false),
+  ENABLE_SOUNDCLOUD: bool().optional().default(true),
 
   YOUTUBE_PRIORITY: intInRange(1, 10, 3).optional().default(3),
   INTERNET_ARCHIVE_PRIORITY: intInRange(1, 10, 2).optional().default(2),
   RADIO_PRIORITY: intInRange(1, 10, 1).optional().default(1),
+  SOUNDCLOUD_PRIORITY: intInRange(1, 10, 4).optional().default(4),
   MAX_RESULTS_PER_SOURCE: intInRange(1, 25, 3).optional().default(3),
 
   MAX_QUEUE_SIZE: intInRange(1, 1000, 100).optional().default(100),
@@ -128,6 +130,11 @@ export function loadBotConfig(): BotConfig {
       radio: {
         enabled: env.ENABLE_RADIO as boolean,
         priority: env.RADIO_PRIORITY as number,
+        maxResults: env.MAX_RESULTS_PER_SOURCE as number,
+      },
+      soundcloud: {
+        enabled: env.ENABLE_SOUNDCLOUD as boolean,
+        priority: env.SOUNDCLOUD_PRIORITY as number,
         maxResults: env.MAX_RESULTS_PER_SOURCE as number,
       },
     },

@@ -356,7 +356,9 @@ export class MusicManager {
       let resource;
       if (song.service === 'radio' || song.service === 'internet_archive') {
         resource = await this.createRadioResource(song.url);
-      } else if (song.service === 'youtube') {
+      } else if (song.service === 'youtube' || song.service === 'soundcloud') {
+        // SoundCloud URLs are also resolved + piped by yt-dlp — same path as YouTube.
+        // No proxy/cookies needed for SoundCloud (rate-limit by client_id, not IP).
         resource = await this.createYouTubeStreamResource(guildId, song);
       } else {
         resource = createAudioResource(song.url, {

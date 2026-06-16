@@ -1,21 +1,21 @@
-import { 
-  ChatInputCommandInteraction, 
-  EmbedBuilder, 
+import {
+  ChatInputCommandInteraction,
+  EmbedBuilder,
   ColorResolvable,
   InteractionResponse,
-  Message
+  Message,
 } from 'discord.js';
 import MusaPhrasesJson from '../assets/phrases.json';
 import { ServiceType } from '../types/music';
 
 // Cores da Musa (tons de roxo)
 export const MusaColors = {
-  primary: '#8B5DBC' as ColorResolvable,      // Roxo principal da Musa
-  success: '#9B7FBD' as ColorResolvable,      // Roxo claro para sucesso
-  warning: '#A15BBF' as ColorResolvable,      // Roxo médio para avisos
-  error: '#7A4BB8' as ColorResolvable,        // Roxo escuro para erros
-  queue: '#8E65C4' as ColorResolvable,        // Roxo para queue
-  nowPlaying: '#9F72C7' as ColorResolvable,   // Roxo para "tocando agora"
+  primary: '#8B5DBC' as ColorResolvable, // Roxo principal da Musa
+  success: '#9B7FBD' as ColorResolvable, // Roxo claro para sucesso
+  warning: '#A15BBF' as ColorResolvable, // Roxo médio para avisos
+  error: '#7A4BB8' as ColorResolvable, // Roxo escuro para erros
+  queue: '#8E65C4' as ColorResolvable, // Roxo para queue
+  nowPlaying: '#9F72C7' as ColorResolvable, // Roxo para "tocando agora"
 } as const;
 
 // Emojis musicais da Musa
@@ -67,6 +67,8 @@ export const getServiceEmoji = (service: ServiceType): string => {
       return '📻';
     case 'spotify':
       return '🟢';
+    case 'soundcloud':
+      return '🟠';
     default:
       return '🎵';
   }
@@ -119,13 +121,12 @@ export const createMusaEmbed = (options: {
 export const safeReply = async (
   interaction: ChatInputCommandInteraction,
   content: string | { embeds: EmbedBuilder[] },
-  _ephemeral = true
+  _ephemeral = true,
 ): Promise<InteractionResponse<boolean> | Message<boolean> | null> => {
   try {
     // For policy: always ephemeral. Ignore provided flag.
-    const options = typeof content === 'string' 
-      ? { content, ephemeral: true }
-      : { ...content, ephemeral: true };
+    const options =
+      typeof content === 'string' ? { content, ephemeral: true } : { ...content, ephemeral: true };
 
     if (interaction.replied || interaction.deferred) {
       return await interaction.followUp(options);
@@ -140,15 +141,15 @@ export const safeReply = async (
 
 export const formatDuration = (seconds: number): string => {
   if (!seconds || isNaN(seconds)) return '00:00';
-  
+
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
-  
+
   if (hours > 0) {
     return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
-  
+
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 };
 
@@ -164,5 +165,5 @@ export const getRandomPhrase = (category: keyof typeof MusaPhrases | string): st
   const phrases = (MusaPhrases as any)[category] as string[] | undefined;
   const list = phrases && phrases.length > 0 ? phrases : [''];
   const randomIndex = Math.floor(Math.random() * list.length);
-  return (list[randomIndex] ?? list[0] ?? '');
+  return list[randomIndex] ?? list[0] ?? '';
 };
