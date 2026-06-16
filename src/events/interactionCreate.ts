@@ -102,6 +102,28 @@ export default {
       return;
     }
 
+    // ── Autocomplete interactions ───────────────────────────────────────────
+    if (interaction.isAutocomplete()) {
+      const command = interaction.client.commands?.get(interaction.commandName);
+      if (command?.autocomplete) {
+        try {
+          await command.autocomplete(interaction);
+        } catch (error) {
+          logError('Autocomplete handler failed', error as Error, {
+            commandName: interaction.commandName,
+            userId: interaction.user.id,
+          });
+          // Respond with empty to avoid the interaction expiring
+          try {
+            await interaction.respond([]);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      return;
+    }
+
     // ── Slash command interactions ──────────────────────────────────────────
     if (!interaction.isChatInputCommand()) return;
 
