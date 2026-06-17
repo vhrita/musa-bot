@@ -76,7 +76,11 @@ export class MultiSourceManager {
     }
   }
 
-  async search(query: string, maxResultsPerService?: number): Promise<MusicSource[]> {
+  async search(
+    query: string,
+    maxResultsPerService?: number,
+    forceSource?: ServiceType,
+  ): Promise<MusicSource[]> {
     if (this.enabledServices.length === 0) {
       logWarning('No enabled services available for search', { query });
       return [];
@@ -85,8 +89,29 @@ export class MultiSourceManager {
     logEvent('multi_source_search_started', {
       query,
       maxResultsPerService,
+      forceSource: forceSource ?? 'auto',
       enabledServices: this.enabledServices.length,
     });
+
+    // --- Forced source path: bypass primary/fallback/passthrough tiers entirely ---
+    if (forceSource) {
+      const forcedService = this.enabledServices.find((s) => s.getServiceName() === forceSource);
+      if (!forcedService) {
+        logWarning('Forced source service not enabled or not found', { query, forceSource });
+        return [];
+      }
+      try {
+        const results = await forcedService.search(query, maxResultsPerService);
+        logEvent('force_source_search_completed', { query, forceSource, resultsCount: results.length });
+        return results.filter((r) => {
+          if (r.service !== 'youtube') return true;
+          return typeof r.url === 'string' && isYouTubeVideoUrl(r.url);
+        });
+      } catch (error) {
+        logError(`Forced source search failed: ${forceSource}`, error as Error, { query, forceSource });
+        return [];
+      }
+    }
 
     // Tier separation for waterfall fallback:
     //  - FALLBACK_SERVICES: only queried when all primary music sources return empty

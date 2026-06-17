@@ -13,7 +13,8 @@ import {
 } from '../utils/discord';
 import { logEvent, logError } from '../utils/logger';
 import { botConfig } from '../config';
-import { analyzeUrl, detectProvider, detectContentKind } from '../utils/providers';
+import { analyzeUrl, detectProvider, detectContentKind, isSoundCloudUrl } from '../utils/providers';
+import { ServiceType } from '../types/music';
 import { SpotifyPlaylistProvider } from '../services/providers/SpotifyPlaylistProvider';
 import { TrackResolver } from '../services/TrackResolver';
 import { spawn } from 'child_process';
@@ -26,9 +27,20 @@ export default {
     .addStringOption((option) =>
       option
         .setName('query')
-        .setDescription('Nome da música, artista ou termo de busca')
+        .setDescription('Nome da música, artista ou URL (YouTube, Spotify, SoundCloud)')
         .setRequired(true)
         .setMaxLength(200),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('source')
+        .setDescription('☁️ Fonte de busca (padrão: Auto — YouTube → SoundCloud fallback)')
+        .setRequired(false)
+        .addChoices(
+          { name: '🔀 Auto (YouTube → SoundCloud fallback)', value: 'auto' },
+          { name: '▶️ YouTube', value: 'youtube' },
+          { name: '☁️ SoundCloud', value: 'soundcloud' },
+        ),
     ),
 
   async execute(interaction: ChatInputCommandInteraction, musicManager: MusicManager): Promise<void> {
@@ -36,6 +48,11 @@ export default {
       await interaction.deferReply({ ephemeral: true });
 
       const query = interaction.options.getString('query', true);
+      // 'auto' = default waterfall (YouTube primary → SoundCloud fallback).
+      // 'youtube' or 'soundcloud' forces that single source, bypassing the waterfall.
+      const sourceOption = interaction.options.getString('source') ?? 'auto';
+      const forceSource: ServiceType | undefined =
+        sourceOption === 'auto' ? undefined : (sourceOption as ServiceType);
       const member = interaction.member as GuildMember;
       const guildId = interaction.guildId!;
 
@@ -50,6 +67,7 @@ export default {
         guildId,
         userId: member.id,
         query,
+        source: sourceOption,
         voiceChannel: validationResult.voiceChannel!.name,
       });
 
@@ -68,6 +86,13 @@ export default {
         if (!selectedSong) {
           // fallback mínimo
           selectedSong = { title: watchUrl, url: watchUrl, service: 'youtube' };
+        }
+      } else if (provider === 'soundcloud' || isSoundCloudUrl(query)) {
+        // URL direta do SoundCloud — resolve metadados e toca via SoundCloud (yt-dlp pipe)
+        selectedSong = await this.fetchSoundCloudMeta(query);
+        if (!selectedSong) {
+          // fallback mínimo: a URL em si é suficiente para o yt-dlp pipe
+          selectedSong = { title: query, url: query, service: 'soundcloud' };
         }
       } else if (provider === 'spotify' && kind === 'track') {
         // Pegar metadados do Spotify e resolver para YouTube
@@ -98,13 +123,14 @@ export default {
           thumbnail: meta.thumbnailUrl || undefined,
         };
       } else {
-        // Buscar música via MultiSource
-        selectedSong = await this.searchMusic(query, musicManager);
+        // Buscar música via MultiSource, com fonte forçada se especificada
+        selectedSong = await this.searchMusic(query, musicManager, forceSource);
       }
       if (!selectedSong) {
+        const sourceLabel = forceSource ? ` no ${forceSource}` : '';
         const embed = createMusaEmbed({
           title: 'Nenhuma Música Encontrada',
-          description: `${MusaEmojis.search} Não consegui encontrar "${truncateText(query, 50)}" em nenhuma das minhas fontes musicais! Tente um termo diferente! ${MusaEmojis.notes}`,
+          description: `${MusaEmojis.search} Não consegui encontrar "${truncateText(query, 50)}"${sourceLabel}! Tente um termo diferente! ${MusaEmojis.notes}`,
           color: MusaColors.warning,
         });
 
@@ -181,10 +207,10 @@ export default {
     return { success: true, voiceChannel: userVoiceChannel };
   },
 
-  async searchMusic(query: string, musicManager: MusicManager) {
+  async searchMusic(query: string, musicManager: MusicManager, forceSource?: ServiceType) {
     const searchResults = await musicManager
       .getMultiSourceManager()
-      .search(query, botConfig.services.youtube.maxResults);
+      .search(query, botConfig.services.youtube.maxResults, forceSource);
 
     return searchResults.length > 0 ? searchResults[0] : null;
   },
@@ -375,6 +401,56 @@ export default {
         }
       });
       p.on('error', () => resolve({ title: videoUrl, url: videoUrl, service: 'youtube' }));
+    });
+  },
+
+  /**
+   * Resolve metadata for a direct SoundCloud URL via yt-dlp --dump-json.
+   * No proxy needed — SoundCloud is accessible from datacenter IPs.
+   * Returns a MusicSource-compatible object with service: 'soundcloud'.
+   *
+   * ☁️ SoundCloud tracks play via the same yt-dlp pipe path as YouTube
+   * (MusicManager.createYouTubeStreamResource routes on service === 'soundcloud').
+   */
+  async fetchSoundCloudMeta(trackUrl: string): Promise<any | null> {
+    return new Promise((resolve) => {
+      let output = '';
+      logEvent('soundcloud_url_meta_fetch', { url: trackUrl });
+
+      // Minimal args: no proxy, no cookies — SoundCloud doesn't need them.
+      const args = [
+        '--dump-json',
+        '--no-warnings',
+        '--skip-download',
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        trackUrl,
+      ];
+      const p = spawn('yt-dlp', args);
+      p.stdout.on('data', (d: Buffer) => {
+        output += d.toString();
+      });
+      p.on('close', () => {
+        try {
+          const data = JSON.parse(output.trim().split('\n')[0] || '{}');
+          if (!data || !data.title) {
+            logEvent('soundcloud_url_meta_fallback', { url: trackUrl });
+            return resolve({ title: trackUrl, url: trackUrl, service: 'soundcloud' });
+          }
+          return resolve({
+            title: data.title as string,
+            url: (data.webpage_url as string) || trackUrl,
+            duration: typeof data.duration === 'number' ? data.duration : undefined,
+            creator: (data.uploader as string) || (data.artist as string) || undefined,
+            thumbnail: (data.thumbnail as string) || undefined,
+            service: 'soundcloud',
+          });
+        } catch {
+          logEvent('soundcloud_url_meta_parse_error', { url: trackUrl });
+          return resolve({ title: trackUrl, url: trackUrl, service: 'soundcloud' });
+        }
+      });
+      p.on('error', () => resolve({ title: trackUrl, url: trackUrl, service: 'soundcloud' }));
     });
   },
 };

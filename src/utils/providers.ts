@@ -1,4 +1,4 @@
-export type Provider = 'youtube' | 'ytm' | 'spotify' | 'unknown';
+export type Provider = 'youtube' | 'ytm' | 'spotify' | 'soundcloud' | 'unknown';
 export type ContentKind = 'track' | 'playlist' | 'unknown';
 
 export interface DetectedUrlInfo {
@@ -19,6 +19,8 @@ const YTM_HOSTS = new Set(['music.youtube.com', 'www.music.youtube.com']);
 
 const SPOTIFY_HOSTS = new Set(['open.spotify.com']);
 
+const SC_HOSTS = new Set(['soundcloud.com', 'www.soundcloud.com', 'on.soundcloud.com', 'm.soundcloud.com']);
+
 function safeParseUrl(input: string): URL | null {
   try {
     // If input is missing protocol, try to prepend https://
@@ -33,6 +35,13 @@ function safeParseUrl(input: string): URL | null {
 
 function getHost(url: URL): string {
   return url.hostname.toLowerCase();
+}
+
+/** Returns true when the input is a direct soundcloud.com URL */
+export function isSoundCloudUrl(input: string): boolean {
+  const u = safeParseUrl(input);
+  if (!u) return false;
+  return SC_HOSTS.has(getHost(u));
 }
 
 export function isYouTubeVideoUrl(input: string): boolean {
@@ -75,6 +84,7 @@ export function detectProvider(input: string): Provider {
   if (YTM_HOSTS.has(h)) return 'ytm';
   if (YT_HOSTS.has(h)) return 'youtube';
   if (SPOTIFY_HOSTS.has(h)) return 'spotify';
+  if (SC_HOSTS.has(h)) return 'soundcloud';
   return 'unknown';
 }
 
